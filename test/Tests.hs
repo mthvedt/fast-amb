@@ -3,6 +3,8 @@
   ViewPatterns
 #-}
 
+module Tests (tests) where
+
 import Control.Monad
 import Control.Monad.Identity
 import Control.Monad.Trans
@@ -10,6 +12,8 @@ import Control.Monad.Trans
 import Test.QuickCheck
 import Test.QuickCheck.Function
 import Test.QuickCheck.Gen
+
+import Distribution.TestSuite.QuickCheck
 
 import Amb
 
@@ -33,15 +37,15 @@ axiomMonadRightId mx = (mx >>= return) == mx
 axiomMonadAssoc :: (Monad m, Eq (m c)) => m a -> Fun a (m b) -> Fun b (m c) -> Bool
 axiomMonadAssoc mx (apply -> mf) (apply -> mg) = ((mx >>= mf) >>= mg) == (mx >>= (mf >=> mg))
 
-quickCheckMonad :: (Arbitrary (m Int), Show (m Int), Eq (m Int), Monad m) => m Int -> IO ()
-quickCheckMonad _mw = do
-  quickCheck $ typer axiomFunctorId
-  quickCheck $ typer (axiomFunctorComp :: (Functor m, Eq (m Int)) => m Int -> Fun Int Int -> Fun Int Int -> Bool)
-  quickCheck $ typer (axiomMonadLeftId :: (Monad m, Eq (m Int)) => m Int -> Int -> Fun Int (m Int) -> Bool)
-  quickCheck $ typer axiomMonadRightId
-  quickCheck $ typer (axiomMonadAssoc :: (Monad m, Eq (m Int)) => m Int -> Fun Int (m Int) -> Fun Int (m Int) -> Bool)
-  where
-  typer f mx = f (mx `asTypeOf` _mw)
+quickCheckMonad :: (Arbitrary (m Int), Show (m Int), Eq (m Int), Monad m) => m Int -> String -> Test
+quickCheckMonad _mw typeclass_desc = testGroup ("Monad axioms for " ++ typeclass_desc)
+    [ testProperty "Functor identity law" $ typer axiomFunctorId
+    , testProperty "Functor composition law" $ typer (axiomFunctorComp :: (Functor m, Eq (m Int)) => m Int -> Fun Int Int -> Fun Int Int -> Bool)
+    , testProperty "Monad left identity law" $ typer (axiomMonadLeftId :: (Monad m, Eq (m Int)) => m Int -> Int -> Fun Int (m Int) -> Bool)
+    , testProperty "Monad right identity law" $ typer axiomMonadRightId
+    , testProperty "Monad associativity law" $ typer (axiomMonadAssoc :: (Monad m, Eq (m Int)) => m Int -> Fun Int (m Int) -> Fun Int (m Int) -> Bool)
+  ]
+  where typer f mx = f (mx `asTypeOf` _mw)
 
 instance Arbitrary a => Arbitrary (ScottAmb a) where
   arbitrary = amb <$> arbitrary
@@ -55,4 +59,5 @@ instance Arbitrary a => Arbitrary (ScottAmb a) where
 -- -- and there's no way to access the value m a inside a given value t m a.
 -- axiomMTDistributive _wtma ma (apply -> mf) = lift (ma >>= mf) == (lift ma `asTypeOf` _wtma >>= (lift . mf))
 
-main = quickCheckMonad (return 1 :: ScottAmb Int)
+tests :: IO [Test]
+tests = return [quickCheckMonad (return 1 :: ScottAmb Int) "ScottAmb monad"]
