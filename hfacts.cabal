@@ -6,7 +6,6 @@ version:             0.1.0.0
 -- synopsis:
 -- description:
 license:             AllRightsReserved
-license-file:        LICENSE
 author:              anon
 maintainer:          anon
 -- copyright:
@@ -15,16 +14,21 @@ build-type:          Simple
 extra-source-files:  ChangeLog.md
 cabal-version:       >=1.10
 
-executable hfacts
-  main-is:             Main.hs
-  -- other-modules:
-  -- other-extensions:
-  build-depends:
-    base,
+library
+  build-depends:     base,
+                     mtl,
 
-    mtl,
+                     unordered-containers,
+                     vector
+  hs-source-dirs:    src
+  exposed-modules:   Amb
+  default-language:  Haskell2010
 
-    unordered-containers,
-    vector
-  hs-source-dirs:      src
-  default-language:    Haskell2010
+Test-Suite test
+  type:               exitcode-stdio-1.0
+  main-is:            Main.hs
+  hs-source-dirs:     test
+  build-depends:      base,
+                      QuickCheck,
+
+                      hfacts

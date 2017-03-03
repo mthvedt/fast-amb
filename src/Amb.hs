@@ -6,7 +6,7 @@
   TypeFamilies
 #-}
 
-module Main where
+module Amb where
 
 import Control.Monad
 import Control.Monad.Identity
@@ -19,6 +19,36 @@ import qualified Data.Vector.Unboxed as UnboxedVectors
 type BoxedVector = BoxedVectors.Vector
 type UnboxedVectors = UnboxedVectors.Vector
 
+-- begin free monad experiment
+
+-- Church-encoded free monad, accepting two continuations.
+-- The first continuation deals with a pure 'boxed' value.
+-- The second collapses the boxed f's inside the free monad.
+-- newtype Free r f a = Free ((a -> r) -> (f r -> r) -> r)
+--
+-- runFree :: Free r f a -> (a -> r) -> (f r -> r) -> r
+-- runFree (Free cxr) = cxr
+--
+-- instance Functor (Free r f) where
+--   fmap = liftM
+--
+-- instance Applicative (Free r f) where
+--   pure = return
+--   (<*>) = ap
+--
+-- instance Monad (Free r f) where
+--   return x = Free $ \jc _ -> jc x
+--   (Free cxr) >>= bindf = Free $ \jc fc -> cxr (\x -> runFree (bindf x) jc fc) fc
+--
+-- instance MonadTrans (Free r) where
+--    lift m = Free (\jc fc -> fc (jc <$> m))
+
+-- end free monad experiment
+
+class (Monad m) => MonadAmb m where
+  amb :: [t] -> m t
+  ambcat :: m (m t) -> m t
+
 -- We might extend this later
 -- This is the Scott encoding: a List represented as a manipulator of continuations.
 -- For a nonempty list, we are provided a continuation that takes a head element and the rest of the list.
@@ -29,67 +59,42 @@ newtype Amb m a = Amb (forall r. (a -> Amb m a -> m r) -> m r -> m r)
 runAmb :: Amb m a -> (a -> Amb m a -> m r) -> m r -> m r
 runAmb (Amb cxr) = cxr
 
+instance Functor (Amb f) where
+  fmap fab (Amb cxra) = Amb $ \cb mb -> cxra (\a as -> cb (fab a) (fab <$> as)) mb
+
+instance Applicative (Amb a) where
+  pure x = ambcons x ambnil
+  afs <*> axs = ambcat $ fmap (`fmap` axs) afs
+
+instance Monad (Amb m) where
+  return = pure
+  as >>= famb = ambcat $ fmap famb as
+
+instance MonadTrans Amb where
+  -- Interestingly, this is the only time we use m as a monad.
+  lift m = Amb $ \c i -> m >>= \x -> c x ambnil
+
 ambnil :: Amb m a
 ambnil = Amb $ \_ i -> i
 
 ambcons :: a -> Amb m a -> Amb m a
 ambcons x axs = Amb $ \c _ -> c x axs
 
-ambone :: a -> Amb m a
-ambone x = ambcons x ambnil
+-- Given an amb-continuation c and an amb-of-amb axss,
+-- creates a continuation that accepts a value a and concatenates the input amb to axss.
+ambcatHelperInner :: (a -> Amb m a -> m r) -> Amb m (Amb m a) -> a -> Amb m a -> m r
+ambcatHelperInner c axss x xs0 = c x $ ambcat $ ambcons xs0 axss
+-- ambcatHelperInner c axss x xs0 = c x $ Amb $ \c i -> runAmb (ambcons xs0 axss) (ambcatHelper c i) i
+-- ambcatHelperInner c axss x xs0 = c x $ Amb $ \c i -> ambcatHelper c i xs0 axss
 
--- ambcons :: (Monad m) => m a -> Amb m a -> Amb m a
--- Given a continuation a -> Amb m a -> m r, we call it with the given mx and axs.
--- ambcons mx axs = Amb $ \c _ -> mx >>= \x -> c x axs
-
-amblist :: [x] -> Amb m x
-amblist = foldr ambcons (Amb (\ _ i -> i))
-
-ambcat :: Amb m (Amb m a) -> Amb m a
 -- We want to create a continuation Amb m a -> Amb m (Amb m a) -> m r
--- that uses the continuation c :: a -> Amb m a -> m r.
-ambcat axaxs = Amb $ \c i -> runAmb axaxs
-  -- We want to create a continuation Amb m a -> Amb m (Amb m a) -> m r
-  -- that uses the continuation c :: a -> Amb m a -> m r.
-  -- In this continuation, axs0 is the first element of the amb of ambs, and axss the rest.
-  -- We want to run the continuation, c, on the first element of axs0, and ambcat the rest of axs0 with axss.
-  -- If axs0 is empty, we recurse to axss.
-  (\axs0 axss -> runAmb axs0
-      (\x xs0 -> c x $ ambcat $ ambcons xs0 axss)
-      (runAmb (ambcat axss) c i))
-  i
+-- that uses the continuation c :: a -> Amb m a -> m r and the failure value m r.
+ambcatHelper :: (a -> Amb m a -> m r) -> m r -> Amb m a -> Amb m (Amb m a) -> m r
+ambcatHelper c i asx0 axss = runAmb asx0 (ambcatHelperInner c axss) (runAmb (ambcat axss) c i)
 
-instance (Functor f) => Functor (Amb f) where
-  fmap fab (Amb cxra) = Amb $ \cb mb -> cxra (\a as -> cb (fab a) (fmap fab as)) mb
-
-instance (Applicative a) => Applicative (Amb a) where
-  pure = ambone
-  afs <*> axs = ambcat $ fmap (`fmap` axs) afs
-
-instance (Monad m) => Monad (Amb m) where
-  return = pure
-  as >>= famb = ambcat $ fmap famb as
-
--- data AmbListImpl m a = AmbNil | AmbCons a (AmbList m a)
--- newtype AmbList m a = AmbList (m (AmbListImpl m a))
---
--- instance (Functor f) => Functor (AmbImpl f) where
---   fmap f (AmbImpl m) = AmbImpl $ fmap f2 m where
---     f2 AmbNil = AmbNil
---     f2 (AmbCons x xs) = AmbCons (f x) $ fmap f xs
---
--- instance (Applicative a) => Applicative (AmbImpl a) where
---   pure x = AmbImpl . pure $ AmbCons x (AmbImpl $ pure AmbNil)
---   (AmbImpl f) <*> (AmbImpl x) = innerap f x where
---     innerap AmbNil _ = AmbNil
---     innerap _ AmbNil = AmbNil
---     innerap (AmbCons f fs) xs = AmbCons ()
---
--- instance (Monad m) => Monad (AmbImpl m) where
---   return x = AmbImpl . return $ AmbCons x (AmbImpl $ return AmbNil)
-
--- type AmbResult m where
-  -- runAmb :: m a -> m (Maybe (AmbResult m, m a))
+instance MonadAmb (Amb m) where
+  amb = foldr ambcons (Amb (\ _ i -> i))
+  ambcat axaxs = Amb $ \c i -> runAmb axaxs (ambcatHelper c i) i
 
 -- class FactQuery q where
 --   type Result q
@@ -150,12 +155,7 @@ data FactSystemImpl = FactSystemImpl {
 
 newtype FactSystem m a = FactSystem (StateT FactSystemImpl m a) deriving (Functor, Applicative, Monad)
 
-
-
 -- newtype Fact f = Fact f
 
 -- class FactCont m f where
   -- runFact :: m a -> Fact f -> a
-
-main :: IO ()
-main = putStrLn "Hello, Haskell!"
