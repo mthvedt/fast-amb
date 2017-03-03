@@ -29,6 +29,8 @@ Test-Suite test
   main-is:            Main.hs
   hs-source-dirs:     test
   build-depends:      base,
+                      mtl,
+
                       QuickCheck,
 
                       hfacts

@@ -1,8 +1,7 @@
 {-# LANGUAGE
+  FlexibleInstances,
   GeneralizedNewtypeDeriving,
-  MultiParamTypeClasses,
   RankNTypes,
-  ScopedTypeVariables,
   TypeFamilies
 #-}
 
@@ -45,8 +44,9 @@ type UnboxedVectors = UnboxedVectors.Vector
 
 -- end free monad experiment
 
-class (Monad m) => MonadAmb m where
+class Monad m => Amb m where
   amb :: [t] -> m t
+  -- TODO: this looks like flatten
   ambcat :: m (m t) -> m t
 
 -- We might extend this later
@@ -54,47 +54,57 @@ class (Monad m) => MonadAmb m where
 -- For a nonempty list, we are provided a continuation that takes a head element and the rest of the list.
 -- For the empty list, we are provided a 'failure continuation'; the second argument r.
 -- The manipulator function is called the 'constructor'.
-newtype Amb m a = Amb (forall r. (a -> Amb m a -> m r) -> m r -> m r)
+newtype AmbT m a = AmbT (forall r. (a -> AmbT m a -> m r) -> m r -> m r)
 
-runAmb :: Amb m a -> (a -> Amb m a -> m r) -> m r -> m r
-runAmb (Amb cxr) = cxr
+runAmb :: AmbT m a -> (a -> AmbT m a -> m r) -> m r -> m r
+runAmb (AmbT cxr) = cxr
 
-instance Functor (Amb f) where
-  fmap fab (Amb cxra) = Amb $ \cb mb -> cxra (\a as -> cb (fab a) (fab <$> as)) mb
+ambAsList :: (Applicative m) => AmbT m a -> m [a]
+ambAsList mas = runAmb mas (\a mas1 -> (\as -> a:as) <$> ambAsList mas1) (pure [])
 
-instance Applicative (Amb a) where
-  pure x = ambcons x ambnil
-  afs <*> axs = ambcat $ fmap (`fmap` axs) afs
+instance Functor (AmbT f) where
+  fmap fab (AmbT cxra) = AmbT $ \cb mb -> cxra (\a as -> cb (fab a) (fab <$> as)) mb
 
-instance Monad (Amb m) where
-  return = pure
+instance Applicative (AmbT a) where
+  pure = return
+  (<*>) = ap
+
+instance Monad (AmbT m) where
+  return x = amb [x]
   as >>= famb = ambcat $ fmap famb as
 
-instance MonadTrans Amb where
+instance MonadTrans AmbT where
   -- Interestingly, this is the only time we use m as a monad.
-  lift m = Amb $ \c i -> m >>= \x -> c x ambnil
+  lift m = AmbT $ \c i -> m >>= \x -> c x ambnil
 
-ambnil :: Amb m a
-ambnil = Amb $ \_ i -> i
+ambnil :: AmbT m a
+ambnil = AmbT $ \_ i -> i
 
-ambcons :: a -> Amb m a -> Amb m a
-ambcons x axs = Amb $ \c _ -> c x axs
-
+ambcons :: a -> AmbT m a -> AmbT m a
+ambcons x axs = AmbT $ \c _ -> c x axs
 -- Given an amb-continuation c and an amb-of-amb axss,
 -- creates a continuation that accepts a value a and concatenates the input amb to axss.
-ambcatHelperInner :: (a -> Amb m a -> m r) -> Amb m (Amb m a) -> a -> Amb m a -> m r
+ambcatHelperInner :: (a -> AmbT m a -> m r) -> AmbT m (AmbT m a) -> a -> AmbT m a -> m r
 ambcatHelperInner c axss x xs0 = c x $ ambcat $ ambcons xs0 axss
 -- ambcatHelperInner c axss x xs0 = c x $ Amb $ \c i -> runAmb (ambcons xs0 axss) (ambcatHelper c i) i
 -- ambcatHelperInner c axss x xs0 = c x $ Amb $ \c i -> ambcatHelper c i xs0 axss
 
 -- We want to create a continuation Amb m a -> Amb m (Amb m a) -> m r
 -- that uses the continuation c :: a -> Amb m a -> m r and the failure value m r.
-ambcatHelper :: (a -> Amb m a -> m r) -> m r -> Amb m a -> Amb m (Amb m a) -> m r
+ambcatHelper :: (a -> AmbT m a -> m r) -> m r -> AmbT m a -> AmbT m (AmbT m a) -> m r
 ambcatHelper c i asx0 axss = runAmb asx0 (ambcatHelperInner c axss) (runAmb (ambcat axss) c i)
 
-instance MonadAmb (Amb m) where
-  amb = foldr ambcons (Amb (\ _ i -> i))
-  ambcat axaxs = Amb $ \c i -> runAmb axaxs (ambcatHelper c i) i
+instance Amb (AmbT m) where
+  amb = foldr ambcons ambnil
+  ambcat axaxs = AmbT $ \c i -> runAmb axaxs (ambcatHelper c i) i
+
+type ScottAmb a = AmbT Identity a
+
+instance Eq a => Eq (ScottAmb a) where
+  as == bs = runIdentity (ambAsList as) == runIdentity (ambAsList bs)
+
+instance Show a => Show (ScottAmb a) where
+  show = show . ambAsList
 
 -- class FactQuery q where
 --   type Result q
