@@ -37,8 +37,8 @@ axiomMonadRightId mx = (mx >>= return) == mx
 axiomMonadAssoc :: (Monad m, Eq (m c)) => m a -> Fun a (m b) -> Fun b (m c) -> Bool
 axiomMonadAssoc mx (apply -> mf) (apply -> mg) = ((mx >>= mf) >>= mg) == (mx >>= (mf >=> mg))
 
-quickCheckMonad :: (Arbitrary (m Int), Show (m Int), Eq (m Int), Monad m) => m Int -> String -> Test
-quickCheckMonad _mw typeclass_desc = testGroup ("Monad axioms for " ++ typeclass_desc)
+testMonad :: (Monad m, Arbitrary (m Int), Show (m Int), Eq (m Int)) => m Int -> String -> Test
+testMonad _mw typeclass_desc = testGroup ("Monad axioms for " ++ typeclass_desc)
     [ testProperty "Functor identity law" $ typer axiomFunctorId
     , testProperty "Functor composition law" $ typer (axiomFunctorComp :: (Functor m, Eq (m Int)) => m Int -> Fun Int Int -> Fun Int Int -> Bool)
     , testProperty "Monad left identity law" $ typer (axiomMonadLeftId :: (Monad m, Eq (m Int)) => m Int -> Int -> Fun Int (m Int) -> Bool)
@@ -46,9 +46,6 @@ quickCheckMonad _mw typeclass_desc = testGroup ("Monad axioms for " ++ typeclass
     , testProperty "Monad associativity law" $ typer (axiomMonadAssoc :: (Monad m, Eq (m Int)) => m Int -> Fun Int (m Int) -> Fun Int (m Int) -> Bool)
   ]
   where typer f mx = f (mx `asTypeOf` _mw)
-
-instance Arbitrary a => Arbitrary (ScottAmb a) where
-  arbitrary = amb <$> arbitrary
 
 -- TODO: figure out a quickcheck harness for these.
 -- axiomMTId :: (MonadTrans t, Monad m, Monad (t m), Eq (t m a)) => t m a -> Bool
@@ -59,5 +56,20 @@ instance Arbitrary a => Arbitrary (ScottAmb a) where
 -- -- and there's no way to access the value m a inside a given value t m a.
 -- axiomMTDistributive _wtma ma (apply -> mf) = lift (ma >>= mf) == (lift ma `asTypeOf` _wtma >>= (lift . mf))
 
+propAmbcat :: (Amb m, Eq (m Int)) => m Int -> [[Int]] -> Bool
+propAmbcat _mw iss = (join . amb $ amb <$> iss) == amb (concat iss) `asTypeOf` _mw
+
+testAmb :: (Amb m, Arbitrary (m Int), Eq (m Int), Show (m Int)) => m Int -> String -> Test
+testAmb _mw typeclass_desc = testGroup ("Tests for " ++ typeclass_desc)
+  [ testMonad _mw typeclass_desc
+  , testProperty "Join flattens amb" $ propAmbcat . (`asTypeOf` _mw)
+  ]
+
+instance Arbitrary a => Arbitrary (ScottAmb a) where
+  arbitrary = amb <$> arbitrary
+  shrink = (amb <$>) . shrink . runIdentity . ambAsList
+
 tests :: IO [Test]
-tests = return [quickCheckMonad (return 1 :: ScottAmb Int) "ScottAmb monad"]
+tests = return
+  [ testAmb (return 1 :: ScottAmb Int) " ScottAmb"
+  ]

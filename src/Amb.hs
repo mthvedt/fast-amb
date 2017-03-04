@@ -104,7 +104,7 @@ instance Eq a => Eq (ScottAmb a) where
   as == bs = runIdentity (ambAsList as) == runIdentity (ambAsList bs)
 
 instance Show a => Show (ScottAmb a) where
-  show = show . ambAsList
+  show a = "Amb [" ++ show (ambAsList a) ++ "]"
 
 -- class FactQuery q where
 --   type Result q
