@@ -1,6 +1,7 @@
 {-# LANGUAGE
   FlexibleContexts,
   FlexibleInstances,
+  GeneralizedNewtypeDeriving,
   RankNTypes,
   TypeFamilies
 #-}
@@ -8,17 +9,17 @@
 module Amb where
 
 import Control.Monad
+import Control.Monad.Except
 import Control.Monad.Identity
 import Control.Monad.State
 
 import Data.Hashable
-import Data.HashMap.Lazy (HashMap, alter, empty)
+import qualified Data.HashMap.Lazy as Maps
 import Data.Int
-import qualified Data.Vector as BoxedVectors
-import qualified Data.Vector.Unboxed as UnboxedVectors
+import qualified Data.Vector.Unboxed as Vectors
 
-type BoxedVector = BoxedVectors.Vector
-type UnboxedVector = UnboxedVectors.Vector
+type Map = Maps.HashMap
+type Vector = Vectors.Vector
 
 -- begin free monad experiment
 
@@ -107,74 +108,93 @@ instance Eq a => Eq (AmbT Identity a) where
 instance Show a => Show (AmbT Identity a) where
   show a = "Amb [" ++ show (ambToList a) ++ "]"
 
--- class FactQuery q where
---   type Result q
---   query :: (FactSystem m) => q -> m () -> Amb m (Result q)
-
 -- A query is a function that returns a FactReader, Amb monad.
 
--- newtype Tuple = UnboxedVector Int
---
--- newtype FactKey = TupleKey String
---
--- class BaseFact t where
---   basekey :: t -> FactKey
---
--- data TupleFact = Fact {
---   factkey :: FactKey,
---   tuple :: Tuple
--- }
---
--- -- class FactTuple t where
--- --   tuplekey :: t -> TupleKey
---
--- data FactSubindexEntry = NoIndex | DirectIndex | SubIndex
---
--- newtype FactIndex = FactIndex {
---   subindices :: HashMap Entity (Maybe FactIndex)
--- }
---
--- newFactIndex :: FactIndex
--- newFactIndex = FactIndex empty
---
--- doPutFact :: [Entity] -> FactIndex -> FactIndex
--- doPutFact [] idx = idx
--- doPutFact (e:es) idx = FactIndex $ alter alterf e $ subindices idx where
---   alterf subs = Just . Just $ maybe newFactIndex (doPutFact es) $ join subs -- TODO: Just Nothing should error instead
---
--- newtype Entity = Entity Int32 deriving (Eq, Hashable, Ord)
---
--- class FactReader m where
---   type PartialResult m
---   queryFact :: Entity -> m (PartialResult m)
---   refineFact :: PartialResult m -> Entity -> m (PartialResult m)
---   allFacts :: (Amb PartialResult m -> AmbT m [Entity]
---
--- class FactWriter m where
---   putFact :: [Entity] -> m ()
---
--- newtype FactBase = FactBase {
---   baseIndex :: FactIndex
--- }
---
--- newtype FactState a = FactState (AmbT (State FactBase) a) deriving (Functor, Applicative, Monad)
---
--- instance Amb FactState where
---   amb = FactState . amb
---   ambcat (FactState f) = FactState . ambcat $ (\(FactState f) -> f) <$> f
---
--- instance FactWriter FactState where
---   putFact f = FactState . lift $ do
---     base <- get
---     put . FactBase . doPutFact f $ baseIndex base
---
--- instance FactReader FactState where
---   type PartialResult FactState =
+newtype Entity = Entity Int32 deriving (Eq, Hashable, Ord)
 
--- instance FactReader FactState where
---   queryFact ::
+newtype Tuple = Tuple (Vector Int32)
 
--- newtype Fact f = Fact f
+tupleToList :: Tuple -> [Entity]
+tupleToList (Tuple t) = Entity <$> Vectors.toList t
 
--- class FactCont m f where
-  -- runFact :: m a -> Fact f -> a
+newtype FactKey = TupleKey String
+
+class BaseFact t where
+  basekey :: t -> FactKey
+
+data TupleFact = Fact {
+  factkey :: FactKey,
+  tuple :: Tuple
+}
+
+data FactEntry = NoEntry | Entry Tuple | SubIndex FactIndex
+
+newtype FactIndex = FactIndex {
+  subindices :: Map Entity (Either Tuple FactIndex)
+}
+
+newFactIndex :: FactIndex
+newFactIndex = FactIndex Maps.empty
+
+doLookup :: Entity -> FactIndex -> FactEntry
+doLookup e idx = case Maps.lookup e $ subindices idx of
+  Nothing -> NoEntry
+  Just (Left t) -> Entry t
+  Just (Right i) -> SubIndex i
+
+newtype RuntimeError = RuntimeError String
+
+-- TODO: this might be improved by making it a ScottList.
+doPutFact :: (FactLogger m) => Tuple -> [Entity] -> FactIndex -> m FactIndex
+doPutFact _ [] _ = throwRuntimeError "exhausted index"
+doPutFact t (e:es) idx = do
+  let idx0 = subindices idx
+  subidx <- case Maps.lookup e idx0 of
+    Just (Left t) -> throwRuntimeError "entity exists"
+    Just (Right idx0) -> return idx0
+    Nothing -> return newFactIndex
+  entry <- case es of
+    [] -> return $ Left t
+    es -> Right <$> doPutFact t es subidx
+  return . FactIndex $ Maps.insert e entry idx0
+
+class Monad m => FactLogger m where
+  throwRuntimeError :: String -> m t
+
+class FactLogger m => FactReader m where
+  type PartialResult m
+  beginQuery :: Entity -> m (PartialResult m)
+  refineQuery :: PartialResult m -> Entity -> m (PartialResult m)
+  endQuery :: PartialResult m -> AmbT m Tuple
+
+class FactLogger m => FactWriter m where
+  putFact :: Tuple -> m ()
+
+newtype FactBase = FactBase {
+  baseIndex :: FactIndex
+}
+
+newtype FactState a = FactState (ExceptT RuntimeError (State FactBase) a) deriving (Functor, Applicative, Monad)
+
+instance FactLogger FactState where
+  throwRuntimeError s = FactState . throwError $ RuntimeError s
+
+instance FactReader FactState where
+  type PartialResult FactState = FactEntry
+  beginQuery e = FactState $ do
+    base <- lift get
+    return . doLookup e $ baseIndex base
+  refineQuery fe e = case fe of
+    NoEntry -> throwRuntimeError "exhausted index"
+    Entry t -> throwRuntimeError "exhausted entity"
+    SubIndex i -> return $ doLookup e i
+  endQuery fe = case fe of
+    NoEntry -> lift $ throwRuntimeError "exhausted index" -- Shouldn't really happen
+    Entry t -> lift $ return t
+    SubIndex i -> lift $ throwRuntimeError "not yet implemented"
+
+instance FactWriter FactState where
+  putFact t = do
+    base <- FactState $ lift get
+    newbase <- doPutFact t (tupleToList t) $ baseIndex base
+    FactState . lift . put $ FactBase newbase
