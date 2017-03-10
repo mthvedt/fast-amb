@@ -1,5 +1,6 @@
 {-# LANGUAGE
   FlexibleInstances,
+  GeneralizedNewtypeDeriving,
   ViewPatterns
 #-}
 
@@ -8,6 +9,9 @@ module Tests (tests) where
 import Control.Monad
 import Control.Monad.Identity
 import Control.Monad.Trans
+
+import qualified Control.Monad.Free as Free
+import qualified Control.Monad.Free.Church as Church
 
 import Test.QuickCheck
 import Test.QuickCheck.Function
@@ -56,20 +60,35 @@ testMonad _mw typeclass_desc = testGroup ("Monad axioms for " ++ typeclass_desc)
 -- -- and there's no way to access the value m a inside a given value t m a.
 -- axiomMTDistributive _wtma ma (apply -> mf) = lift (ma >>= mf) == (lift ma `asTypeOf` _wtma >>= (lift . mf))
 
-propAmbcat :: (Amb m, Eq (m Int)) => m Int -> [[Int]] -> Bool
-propAmbcat _mw iss = (join . amb $ amb <$> iss) == amb (concat iss) `asTypeOf` _mw
+newtype TransformerTestMonad a = TransformerTestMonad (Church.F [] a) deriving (Functor, Applicative, Monad)
 
-testAmb :: (Amb m, Arbitrary (m Int), Eq (m Int), Show (m Int)) => m Int -> String -> Test
+-- TODO test this test
+instance Eq a => Eq (TransformerTestMonad a) where
+  (TransformerTestMonad x) == (TransformerTestMonad y) = eqtest (Church.fromF x) (Church.fromF y) where
+    eqtest (Free.Pure x0) (Free.Pure y0) = x0 == y0
+    eqtest (Free.Free xfs) (Free.Free yfs) = foldr (==) True $ zipWith eqtest xfs yfs
+    eqtest _ _ = False
+
+-- arbitraryTTM' :: TransformerTestMonad a
+-- arbitraryTTM =
+--
+-- instance Arbitrary a => Arbitrary (TransformerTestMonad a) where
+--   arbitrary = arbitraryTTM' <$> arbitrary
+
+propAmbcat :: Amb Int -> [[Int]] -> Bool
+propAmbcat _mw iss = (join . listToAmb $ listToAmb <$> iss) == listToAmb (concat iss) `asTypeOf` _mw
+
+testAmb :: Amb Int -> String -> Test
 testAmb _mw typeclass_desc = testGroup ("Tests for " ++ typeclass_desc)
   [ testMonad _mw typeclass_desc
   , testProperty "Join flattens amb" $ propAmbcat . (`asTypeOf` _mw)
   ]
 
-instance Arbitrary a => Arbitrary (ScottAmb a) where
-  arbitrary = amb <$> arbitrary
-  shrink = (amb <$>) . shrink . runIdentity . ambAsList
+instance Arbitrary a => Arbitrary (Amb a) where
+  arbitrary = listToAmb <$> arbitrary
+  shrink = (listToAmb <$>) . shrink . runIdentity . ambToList
 
 tests :: IO [Test]
 tests = return
-  [ testAmb (return 1 :: ScottAmb Int) " ScottAmb"
+  [ testAmb (return 1 :: Amb Int) " ScottAmb"
   ]
