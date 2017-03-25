@@ -84,11 +84,11 @@ testAmb _mw typeclass_desc = testGroup ("Tests for " ++ typeclass_desc)
   , testProperty "Join flattens amb" $ propAmbcat . (`asTypeOf` _mw)
   ]
 
-instance Arbitrary a => Arbitrary (AmbM a) where
+instance Arbitrary a => Arbitrary (ChurchAmb a) where
   arbitrary = amb <$> arbitrary
   shrink = (amb <$>) . shrink . runIdentity . ambToList
 
 tests :: IO [Test]
 tests = return
-  [ testAmb (return 1 :: AmbM Int) " ScottAmb"
+  [ testAmb (return 1 :: ChurchAmb Int) " ChurchAmb"
   ]
