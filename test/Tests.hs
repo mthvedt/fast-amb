@@ -75,20 +75,20 @@ instance Eq a => Eq (TransformerTestMonad a) where
 -- instance Arbitrary a => Arbitrary (TransformerTestMonad a) where
 --   arbitrary = arbitraryTTM' <$> arbitrary
 
-propAmbcat :: Amb Int -> [[Int]] -> Bool
-propAmbcat _mw iss = (join . listToAmb $ listToAmb <$> iss) == listToAmb (concat iss) `asTypeOf` _mw
+propAmbcat :: (Amb a, Arbitrary (a Int), Eq (a Int), Show (a Int)) => a Int -> [[Int]] -> Bool
+propAmbcat _mw iss = (join . amb $ amb <$> iss) == amb (concat iss) `asTypeOf` _mw
 
-testAmb :: Amb Int -> String -> Test
+testAmb :: (Amb a, Arbitrary (a Int), Eq (a Int), Show (a Int)) => a Int -> String -> Test
 testAmb _mw typeclass_desc = testGroup ("Tests for " ++ typeclass_desc)
   [ testMonad _mw typeclass_desc
   , testProperty "Join flattens amb" $ propAmbcat . (`asTypeOf` _mw)
   ]
 
-instance Arbitrary a => Arbitrary (Amb a) where
-  arbitrary = listToAmb <$> arbitrary
-  shrink = (listToAmb <$>) . shrink . runIdentity . ambToList
+instance Arbitrary a => Arbitrary (AmbM a) where
+  arbitrary = amb <$> arbitrary
+  shrink = (amb <$>) . shrink . runIdentity . ambToList
 
 tests :: IO [Test]
 tests = return
-  [ testAmb (return 1 :: Amb Int) " ScottAmb"
+  [ testAmb (return 1 :: AmbM Int) " ScottAmb"
   ]
