@@ -86,9 +86,14 @@ testAmb _mw typeclass_desc = testGroup ("Tests for " ++ typeclass_desc)
 
 instance Arbitrary a => Arbitrary (ChurchAmb a) where
   arbitrary = amb <$> arbitrary
-  shrink = (amb <$>) . shrink . runIdentity . ambToList
+  shrink = (amb <$>) . shrink . runIdentity . churchAmbToList
+
+instance Arbitrary a => Arbitrary (ScottAmb a) where
+  arbitrary = amb <$> arbitrary
+  shrink = (amb <$>) . shrink . runIdentity . scottAmbToList
 
 tests :: IO [Test]
 tests = return
   [ testAmb (return 1 :: ChurchAmb Int) " ChurchAmb"
+  , testAmb (return 1 :: ScottAmb Int) " ScottAmb"
   ]
