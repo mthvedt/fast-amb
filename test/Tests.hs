@@ -9,6 +9,7 @@ module Tests (tests) where
 import Control.Monad
 import Control.Monad.Identity
 import Control.Monad.Trans
+import Data.Foldable (toList)
 
 import qualified Control.Monad.Free as Free
 import qualified Control.Monad.Free.Church as Church
@@ -84,13 +85,13 @@ testAmb _mw typeclass_desc = testGroup ("Tests for " ++ typeclass_desc)
   , testProperty "Join flattens amb" $ propAmbcat . (`asTypeOf` _mw)
   ]
 
-instance Arbitrary a => Arbitrary (ChurchAmb a) where
+instance Arbitrary t => Arbitrary (ChurchAmb t) where
   arbitrary = amb <$> arbitrary
-  shrink = (amb <$>) . shrink . runIdentity . churchAmbToList
+  shrink = (amb <$>) . shrink . toList . asFoldable
 
-instance Arbitrary a => Arbitrary (ScottAmb a) where
+instance Arbitrary t => Arbitrary (ScottAmb t) where
   arbitrary = amb <$> arbitrary
-  shrink = (amb <$>) . shrink . runIdentity . scottAmbToList
+  shrink = (amb <$>) . shrink . toList . asFoldable
 
 tests :: IO [Test]
 tests = return

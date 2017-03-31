@@ -2,8 +2,12 @@
   FlexibleContexts,
   FlexibleInstances,
   MultiParamTypeClasses,
-  RankNTypes
+  RankNTypes,
+  TypeFamilies
 #-}
+
+-- Continuation-passing implementation of Amb.
+-- Inspired by https://ifl2014.github.io/submissions/ifl2014_submission_13.pdf.
 
 module Amb where
 
@@ -11,6 +15,7 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Identity
 import qualified Control.Monad.State as HState
+import Data.Foldable (toList)
 
 import Data.Hashable
 import qualified Data.HashMap.Lazy as Maps
@@ -20,58 +25,60 @@ import qualified Data.Vector.Unboxed as Vectors
 type Map = Maps.HashMap
 type Vector = Vectors.Vector
 
--- class Suspension s where
---   type Input s
---
--- data Suspended e m t = Suspended {
---   suspension :: e,
---   resume :: Input e -> m t
--- }
+class (Monad m, m ~ Target f) => AmbResult f m where
+  type Target f :: * -> *
+  ambFoldRT :: (t -> r -> r) -> (r -> r) -> r -> f t -> m r
 
-class Monad m => AmbInterpreter m where
-  interpret :: t -> t -> m t
-  interpretFail :: t -> m t
+-- TODO test all of these
+ambFoldLT' :: (AmbResult f m) => (r -> t -> r) -> (r -> r) -> r -> f t -> m r
+ambFoldLT' cf ff z f = ambFoldRT cfl ffl id f <*> return z where
+  -- This transforms a list into a series of (strict) updates on the initial value z.
+  -- Because foldr is lazy, the value cl is only partially evaluated when it is (tail-recursively)
+  -- applied to the strict value (cf zl x).
+  cfl x cl zl = cl $! cf zl x
+  ffl cl zl = cl $! ff zl
+
+ambFoldR :: (AmbResult f Identity) => (t -> r -> r) -> (r -> r) -> r -> f t -> r
+ambFoldR cf ff z ts = runIdentity $ ambFoldRT cf ff z ts
+
+ambFoldL' :: (AmbResult f Identity) => (r -> t -> r) -> (r -> r) -> r -> f t -> r
+ambFoldL' cf ff z ts = runIdentity $ ambFoldLT' cf ff z ts
+
+newtype AmbFoldable t = AmbFoldable (forall r. (t -> r -> r) -> r -> r)
+
+asFoldable :: (AmbResult a Identity) => a t -> AmbFoldable t
+asFoldable a = AmbFoldable $ \f z -> runIdentity $ ambFoldRT f id z a
+
+instance Foldable AmbFoldable where
+  foldr fn z (AmbFoldable f) = f fn z
 
 -- TODO: foldable
+-- TODO invent some invariants for Amb as a transformer
+-- Amb laws: join (amb <$> fs) == amb (join fs) where fs is a list of Foldables.
+-- When a is a monad transformer, the transformed monad must be sequenced depth-first. TODO: test.
 class Monad a => Amb a where
   -- The reason we use [], instead of the more general Foldable, is because amb must be strict in the LHS but not
   -- the RHS of the fold. The [] functor encapsulates this naturally.
-  -- TODO: that's not really what we want. We want a more general "ChurchScott" amb, which can be folded either way.
-  -- It can opt to use the Church fold or a destructive Scott encoding. In particular, we need destructo-Scott
-  -- for continuations to work.
   amb :: [t] -> a t
+  -- TODO: need to write some failure laws and test fail.
   fail :: a ()
 
+-- TODO: class Amb a => AmbM a?
 class Amb a => Logic a where
-  first :: a t -> (t, a t)
+  split :: a t -> a (a t)
 
--- TODO: newtype ChurchList
+ambEq :: (AmbResult a Identity, AmbResult b Identity, Eq t) => a t -> b t -> Bool
+ambEq as bs = toList (asFoldable as) == toList (asFoldable bs)
 
--- class Amb m => AmbState m where
---   type State m
---   get :: m (State m)
---   put :: State m -> m ()
--- TODO: do we need the m?
--- TODO: is it faster if we don't use forall?
-
--- TODO: do we need the m?
--- TODO: is it faster if we don't use forall?
--- This is a slightly more complicated continuation-passing encoding of a Scott list with failure.
--- It's designed to combine the strictness and efficiency of foldl with the tail-recursion and laziness of foldr.
--- Alternately, combining the simplicity of a Foldable/Church list with the efficiency of a Scott list.
--- TODO: test the above assertions.
--- TODO: this doesn't work great. Does it make sense to use a State monad? How do we do state here?
--- newtype AmbT m t = AmbT { runAmbT :: forall r. (m r -> t -> AmbT m t -> m r) -> (m r -> AmbT m t -> m r) -> m r -> m r }
+ambShow :: (AmbResult a Identity, Show t) => String -> a t -> String
+ambShow name as = name ++ "[" ++ (show . toList $ asFoldable as) ++ "]"
 
 -- TODO: This is the Church amb, which should be the fastest Amb. Test it.
 -- We put m r everywhere so ChurchAmbT never has to use the underlying bind.
--- Since m is usually a monad, this is strictly more powerful anyway.
 -- We need m in the ChurchAmb type so we can make it a monad transformer later.
+-- As a bonus, no property of t, m or r is used 'behind' the forall, so any bind/return/&c takes place
+-- in the destructor, which improves inlining in the usual case.
 newtype ChurchAmbT m t = ChurchAmbT { runChurchAmbT :: forall r. (t -> m r -> m r) -> (m r -> m r) -> m r -> m r }
-
--- TODO: how about Maybe a?
--- ambToList :: (Applicative m) => AmbT m a -> m [a]
--- ambToList mas = runAmb mas (\a mas1 -> (\as -> a:as) <$> ambToList mas1) (\mas1 -> ambToList mas1) (pure [])
 
 type ChurchAmb = ChurchAmbT Identity
 
@@ -99,15 +106,21 @@ instance MonadTrans ChurchAmbT where
   -- The only time we use m as a monad.
   lift mx = ChurchAmbT $ \c _ z -> mx >>= \x -> c x z
 
-churchAmbToList :: Monad m => ChurchAmbT m t -> m [t]
-churchAmbToList a = runChurchAmbT a (fmap . (:)) id (return [])
+instance Monad m => AmbResult (ChurchAmbT m) m where
+  type Target (ChurchAmbT m) = m
+  ambFoldRT cf ff z xs = runChurchAmbT xs (fmap . cf) (fmap ff) (return z)
 
 instance Eq a => Eq (ChurchAmbT Identity a) where
-  as == bs = runIdentity (churchAmbToList as) == runIdentity (churchAmbToList bs)
+  (==) = ambEq
 
 instance Show a => Show (ChurchAmbT Identity a) where
-  show a = "ChurchAmb [" ++ show (churchAmbToList a) ++ "]"
+  show = ambShow "ChurchAmb"
 
+-- ScottAmb is in some respects an asymptotic improvement over ChurchAmb. The reducing function, instead of being a fold,
+-- gets a (first, rest) representation of the amb, which yields O(n) access to n elements. But:
+-- * All operations are slower, because constructing the tail of a ScottAmb is expensive.
+-- * Binds multiply all operations by a constant factor of O(n).
+-- As a consequence, prepends are O(n) in the number of prepended elements.
 newtype ScottAmbT m t = ScottAmbT {
   runScottAmbT :: forall r. (t -> ScottAmbT m t -> m r) -> (ScottAmbT m t -> m r) -> m r -> m r
 }
@@ -147,11 +160,14 @@ instance MonadTrans ScottAmbT where
   -- The only time we use m as a monad.
   lift mx = ScottAmbT $ \c _ _ -> mx >>= \x -> c x $ amb []
 
-scottAmbToList :: Monad m => ScottAmbT m t -> m [t]
-scottAmbToList a = runScottAmbT a (\x xs -> (x:) <$> scottAmbToList xs) scottAmbToList (return [])
+instance Monad m => AmbResult (ScottAmbT m) m where
+  type Target (ScottAmbT m) = m
+  ambFoldRT cf0 ff0 z xs = runScottAmbT xs cf ff (return z) where
+    cf first rest = cf0 first <$> ambFoldRT cf0 ff0 z rest
+    ff = ambFoldRT cf0 ff0 z
 
 instance Eq a => Eq (ScottAmbT Identity a) where
-  as == bs = runIdentity (scottAmbToList as) == runIdentity (scottAmbToList bs)
+  (==) = ambEq
 
 instance Show a => Show (ScottAmbT Identity a) where
-  show a = "ScottAmb [" ++ show (scottAmbToList a) ++ "]"
+  show = ambShow "ScottAmb"
