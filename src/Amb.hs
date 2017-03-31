@@ -171,3 +171,47 @@ instance Eq a => Eq (ScottAmbT Identity a) where
 
 instance Show a => Show (ScottAmbT Identity a) where
   show = ambShow "ScottAmb"
+
+-- The best of both worlds--most operations are simple folds, but we always pass in a (lazy) tail
+-- in case we need it. The efficiency of a Church list with an O(1) tail operation.
+newtype ParigotAmbT m t = ParigotAmbT {
+  runParigotAmbT :: forall r. (t -> ParigotAmbT m t -> m r -> m r) -> (ParigotAmbT m t -> m r -> m r) -> m r -> m r
+}
+
+type ParigotAmb = ParigotAmbT Identity
+
+instance Functor (ParigotAmbT f) where
+  fmap = liftM
+
+instance Applicative (ParigotAmbT a) where
+  pure = return
+  (<*>) = ap
+
+instance Monad (ParigotAmbT m) where
+  return x = amb [x]
+  -- TODO: test laziness, asymptotics
+  xs0 >>= fxys = ParigotAmbT $ \cy fy z0 -> let
+    cx x xs = runParigotAmbT (fxys x) cy fy
+    fx xs = fy (xs >>= fxys)
+    in runParigotAmbT xs0 cx fx z0
+
+instance Amb (ParigotAmbT m) where
+  amb [] = ParigotAmbT $ \_ _ z -> z
+  amb (x:xs) = ParigotAmbT $ \c _ z -> c x axs $ runParigotAmbT axs c undefined z where axs = amb xs
+  fail = ParigotAmbT $ \_ f z -> f (amb []) z
+
+instance MonadTrans ParigotAmbT where
+  -- The only time we use m as a monad.
+  lift mx = ParigotAmbT $ \c _ z -> mx >>= \x -> c x (amb []) z
+
+instance Monad m => AmbResult (ParigotAmbT m) m where
+  type Target (ParigotAmbT m) = m
+  ambFoldRT cf ff z xs =
+    -- Here we see the advantage of laziness: _rest is never used.
+    runParigotAmbT xs (\first _rest accumrm -> cf first <$> accumrm) (\_rest accumrm -> ff <$> accumrm) (return z)
+
+instance Eq a => Eq (ParigotAmbT Identity a) where
+  (==) = ambEq
+
+instance Show a => Show (ParigotAmbT Identity a) where
+  show = ambShow "ScottAmb"

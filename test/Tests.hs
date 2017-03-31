@@ -76,6 +76,7 @@ instance Eq a => Eq (TransformerTestMonad a) where
 -- instance Arbitrary a => Arbitrary (TransformerTestMonad a) where
 --   arbitrary = arbitraryTTM' <$> arbitrary
 
+-- Tests that joining an Amb of Ambs is the same as running amb on joined lists.
 propAmbcat :: (Amb a, Arbitrary (a Int), Eq (a Int), Show (a Int)) => a Int -> [[Int]] -> Bool
 propAmbcat _mw iss = (join . amb $ amb <$> iss) == amb (concat iss) `asTypeOf` _mw
 
@@ -93,8 +94,13 @@ instance Arbitrary t => Arbitrary (ScottAmb t) where
   arbitrary = amb <$> arbitrary
   shrink = (amb <$>) . shrink . toList . asFoldable
 
+instance Arbitrary t => Arbitrary (ParigotAmb t) where
+  arbitrary = amb <$> arbitrary
+  shrink = (amb <$>) . shrink . toList . asFoldable
+
 tests :: IO [Test]
 tests = return
-  [ testAmb (return 1 :: ChurchAmb Int) " ChurchAmb"
-  , testAmb (return 1 :: ScottAmb Int) " ScottAmb"
+  [ testAmb (return 1 :: ChurchAmb Int) "ChurchAmb"
+  , testAmb (return 1 :: ScottAmb Int) "ScottAmb"
+  , testAmb (return 1 :: ParigotAmb Int) "ParigotAmb"
   ]

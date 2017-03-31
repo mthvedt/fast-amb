@@ -39,3 +39,6 @@ Test-Suite test
                       free,
 
                       hfacts
+
+  -- Because we test properties that might be rewritten away
+  -- ghc-options:        -fno-enable-rewrite-rules
