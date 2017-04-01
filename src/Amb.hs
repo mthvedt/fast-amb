@@ -16,14 +16,6 @@ import Control.Monad.Identity
 import Control.Monad.Trans
 import Data.Foldable (toList)
 
-import Data.Hashable
-import qualified Data.HashMap.Lazy as Maps
-import Data.Int
-import qualified Data.Vector.Unboxed as Vectors
-
-type Map = Maps.HashMap
-type Vector = Vectors.Vector
-
 class (Monad m, m ~ Target f) => AmbResult f m where
   type Target f :: * -> *
   -- Note that although laziness is not guaranteed, this is at least strict in the wrapping monad.
