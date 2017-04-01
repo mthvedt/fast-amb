@@ -12,9 +12,8 @@
 module Amb where
 
 import Control.Monad
-import Control.Monad.Except
 import Control.Monad.Identity
-import qualified Control.Monad.State as HState
+import Control.Monad.Trans
 import Data.Foldable (toList)
 
 import Data.Hashable
@@ -27,7 +26,11 @@ type Vector = Vectors.Vector
 
 class (Monad m, m ~ Target f) => AmbResult f m where
   type Target f :: * -> *
+  -- Note that although laziness is not guaranteed, this is at least strict in the wrapping monad.
+  -- So it does not support, for example, partial evaluation of monads with side effects.
+  -- If you want to only partially evaluate the underlying monad, use ambHead.
   ambFoldRT :: (t -> r -> r) -> (r -> r) -> r -> f t -> m r
+  -- ambHead :: Int -> f t -> f t
 
 -- TODO test all of these
 ambFoldLT' :: (AmbResult f m) => (r -> t -> r) -> (r -> r) -> r -> f t -> m r
@@ -44,13 +47,22 @@ ambFoldR cf ff z ts = runIdentity $ ambFoldRT cf ff z ts
 ambFoldL' :: (AmbResult f Identity) => (r -> t -> r) -> (r -> r) -> r -> f t -> r
 ambFoldL' cf ff z ts = runIdentity $ ambFoldLT' cf ff z ts
 
-newtype AmbFoldable t = AmbFoldable (forall r. (t -> r -> r) -> r -> r)
+newtype ChurchFoldable t = ChurchFoldable (forall r. (t -> r -> r) -> r -> r)
 
-asFoldable :: (AmbResult a Identity) => a t -> AmbFoldable t
-asFoldable a = AmbFoldable $ \f z -> runIdentity $ ambFoldRT f id z a
+asFoldable :: (AmbResult a Identity) => a t -> ChurchFoldable t
+asFoldable a = ChurchFoldable $ \f z -> runIdentity $ ambFoldRT f id z a
 
-instance Foldable AmbFoldable where
-  foldr fn z (AmbFoldable f) = f fn z
+instance Foldable ChurchFoldable where
+  foldr fn z (ChurchFoldable f) = f fn z
+
+asMaybeFoldable :: (AmbResult a Identity) => a t -> ChurchFoldable (Maybe t)
+asMaybeFoldable a = ChurchFoldable $ \f z -> runIdentity $ ambFoldRT (f . Just) (f Nothing) z a
+
+ambEq :: (AmbResult a Identity, AmbResult b Identity, Eq t) => a t -> b t -> Bool
+ambEq as bs = toList (asMaybeFoldable as) == toList (asMaybeFoldable bs)
+
+ambShow :: (AmbResult a Identity, Show t) => String -> a t -> String
+ambShow name as = name ++ "[" ++ (show . toList $ asMaybeFoldable as) ++ "]"
 
 -- TODO: foldable
 -- TODO invent some invariants for Amb as a transformer
@@ -60,18 +72,18 @@ class Monad a => Amb a where
   -- The reason we use [], instead of the more general Foldable, is because amb must be strict in the LHS but not
   -- the RHS of the fold. The [] functor encapsulates this naturally.
   amb :: [t] -> a t
+  -- t is, of course, unused here
   -- TODO: need to write some failure laws and test fail.
-  fail :: a ()
+  afail :: a t
+
+ambMaybe :: Amb a => [Maybe t] -> a t
+ambMaybe mts = join . amb $ f <$> mts where
+  f (Just x) = return x
+  f Nothing = afail
 
 -- TODO: class Amb a => AmbM a?
 class Amb a => Logic a where
   split :: a t -> a (a t)
-
-ambEq :: (AmbResult a Identity, AmbResult b Identity, Eq t) => a t -> b t -> Bool
-ambEq as bs = toList (asFoldable as) == toList (asFoldable bs)
-
-ambShow :: (AmbResult a Identity, Show t) => String -> a t -> String
-ambShow name as = name ++ "[" ++ (show . toList $ asFoldable as) ++ "]"
 
 -- TODO: This is the Church amb, which should be the fastest Amb. Test it.
 -- We put m r everywhere so ChurchAmbT never has to use the underlying bind.
@@ -100,7 +112,7 @@ instance Monad (ChurchAmbT m) where
 
 instance Amb (ChurchAmbT m) where
   amb xs = ChurchAmbT $ \c _ z -> foldr c z xs
-  fail = ChurchAmbT $ \_ f z -> f z
+  afail = ChurchAmbT $ \_ f z -> f z
 
 instance MonadTrans ChurchAmbT where
   -- The only time we use m as a monad.
@@ -129,10 +141,10 @@ type ScottAmb = ScottAmbT Identity
 
 instance Functor (ScottAmbT f) where
   -- Need to define fmap because we use it in >>=
-  fmap f xs0 = ScottAmbT $ \cy fy z -> let
-    cx x xs = cy (f x) $ f <$> xs
-    fx xs = fy $ f <$> xs
-    in runScottAmbT xs0 cx fx z
+  fmap f xs = ScottAmbT $ \cy fy z -> let
+    cx x xs1 = cy (f x) $ f <$> xs1
+    fx xs1 = fy $ f <$> xs1
+    in runScottAmbT xs cx fx z
 
 instance Applicative (ScottAmbT a) where
   pure = return
@@ -141,10 +153,10 @@ instance Applicative (ScottAmbT a) where
 instance Monad (ScottAmbT m) where
   return x = amb [x]
   -- TODO: test laziness, asymptotics
-  xs0 >>= fxys = scottJoin $ fxys <$> xs0 where
+  xs >>= fxys = scottJoin $ fxys <$> xs where
     scottJoin xss0 = ScottAmbT $ \c0 f0 z0 -> let
-      cxs xs0 xss = let cx x xs = c0 x $ combine xs xss
-                        fx xs = f0 $ combine xs xss
+      cxs xs0 xss = let cx x xs1 = c0 x $ combine xs1 xss
+                        fx xs1 = f0 $ combine xs1 xss
                         zx = runScottAmbT xss cxs fxs z0
                         combine a as = scottJoin $ ScottAmbT $ \ca _ _ -> ca a as
                     in runScottAmbT xs0 cx fx zx
@@ -154,7 +166,7 @@ instance Monad (ScottAmbT m) where
 instance Amb (ScottAmbT m) where
   amb [] = ScottAmbT $ \_ _ z -> z
   amb (x:xs) = ScottAmbT $ \c _ _ -> c x $ amb xs
-  fail = ScottAmbT $ \_ f _ -> f $ amb []
+  afail = ScottAmbT $ \_ f _ -> f $ amb []
 
 instance MonadTrans ScottAmbT where
   -- The only time we use m as a monad.
@@ -162,9 +174,9 @@ instance MonadTrans ScottAmbT where
 
 instance Monad m => AmbResult (ScottAmbT m) m where
   type Target (ScottAmbT m) = m
-  ambFoldRT cf0 ff0 z xs = runScottAmbT xs cf ff (return z) where
-    cf first rest = cf0 first <$> ambFoldRT cf0 ff0 z rest
-    ff = ambFoldRT cf0 ff0 z
+  ambFoldRT cf ff z xs = runScottAmbT xs cf1 ff1 (return z) where
+    cf1 first rest = cf first <$> ambFoldRT cf ff z rest
+    ff1 = ambFoldRT cf ff z
 
 instance Eq a => Eq (ScottAmbT Identity a) where
   (==) = ambEq
@@ -190,15 +202,15 @@ instance Applicative (ParigotAmbT a) where
 instance Monad (ParigotAmbT m) where
   return x = amb [x]
   -- TODO: test laziness, asymptotics
-  xs0 >>= fxys = ParigotAmbT $ \cy fy z0 -> let
-    cx x xs = runParigotAmbT (fxys x) cy fy
-    fx xs = fy (xs >>= fxys)
-    in runParigotAmbT xs0 cx fx z0
+  xs >>= fxys = ParigotAmbT $ \cy fy z0 -> let
+    cx x xs1 = runParigotAmbT (fxys x) cy fy
+    fx xs1 = fy (xs >>= fxys)
+    in runParigotAmbT xs cx fx z0
 
 instance Amb (ParigotAmbT m) where
   amb [] = ParigotAmbT $ \_ _ z -> z
   amb (x:xs) = ParigotAmbT $ \c _ z -> c x axs $ runParigotAmbT axs c undefined z where axs = amb xs
-  fail = ParigotAmbT $ \_ f z -> f (amb []) z
+  afail = ParigotAmbT $ \_ f z -> f (amb []) z
 
 instance MonadTrans ParigotAmbT where
   -- The only time we use m as a monad.

@@ -86,16 +86,17 @@ testAmb _mw typeclass_desc = testGroup ("Tests for " ++ typeclass_desc)
   , testProperty "Join flattens amb" $ propAmbcat . (`asTypeOf` _mw)
   ]
 
+-- TODO: test fails
 instance Arbitrary t => Arbitrary (ChurchAmb t) where
-  arbitrary = amb <$> arbitrary
+  arbitrary = ambMaybe <$> arbitrary
   shrink = (amb <$>) . shrink . toList . asFoldable
 
 instance Arbitrary t => Arbitrary (ScottAmb t) where
-  arbitrary = amb <$> arbitrary
+  arbitrary = ambMaybe <$> arbitrary
   shrink = (amb <$>) . shrink . toList . asFoldable
 
 instance Arbitrary t => Arbitrary (ParigotAmb t) where
-  arbitrary = amb <$> arbitrary
+  arbitrary = ambMaybe <$> arbitrary
   shrink = (amb <$>) . shrink . toList . asFoldable
 
 tests :: IO [Test]
