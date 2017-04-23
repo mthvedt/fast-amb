@@ -9,6 +9,7 @@ module Tests (tests) where
 import Control.Monad
 import Control.Monad.Identity
 import Control.Monad.Trans
+import Control.Monad.Writer.Lazy
 import Data.Foldable (toList)
 
 import qualified Control.Monad.Free as Free
@@ -70,6 +71,28 @@ instance Eq a => Eq (TransformerTestMonad a) where
     eqtest (Free.Free xfs) (Free.Free yfs) = foldr (==) True $ zipWith eqtest xfs yfs
     eqtest _ _ = False
 
+-- -- An Arbitrary implementation of a free monad.
+-- instance (Arbitrary t) => Arbitrary (Church.F [] t) where
+--   arbitrary = oneof [
+--     -- One in two chance of getting either a return or a bind.
+--     return <$> arbitrary,
+--     do
+--       -- For the bind, create a list of Church.F's, the children scaled down by some random size factor
+--       -- (but always strictly less than the current size factor).
+--       scaleFactor <- choose (0 :: Double, 1 :: Double)
+--       unwrapped <- scale (\x -> floor (fromIntegral x * scaleFactor)) arbitrary
+--       return $ Free.wrap unwrapped
+--    ]
+--   shrink f = snd $ Church.runF f rd bd where
+--     -- Each destructor returns a pair of (unshrunken F, list of shrunken Fs). The list is usually discarded
+--     -- except at the top level.
+--     -- return destructor: return [], terminating the shrink
+--     rd x = (return x, [])
+--     -- bind destructor: we're getting a list of (unshrunken F, [shrunken F]) tuples. We discard the shrunken list.
+--     bd tuples = (unshrunken, shrunkens) where
+--       unshrunken = Free.wrap $ fst <$> tuples
+--       shrunkens = Free.wrap <$> shrink (fst <$> tuples)
+
 -- arbitraryTTM' :: TransformerTestMonad a
 -- arbitraryTTM =
 --
@@ -98,6 +121,33 @@ instance Arbitrary t => Arbitrary (ScottAmb t) where
 instance Arbitrary t => Arbitrary (ParigotAmb t) where
   arbitrary = ambMaybe <$> arbitrary
   shrink = (amb <$>) . shrink . toList . asFoldable
+
+-- Helper to test the associativity and laziness of a monad transformer.
+-- In these tests, we have a Writer monoid. The test is that Amb is properly depth-first in evaluation order,
+-- obeys the monad laws, and does not strictly evaluate the monad for lazy folds.
+data AmbTransTest a = AmbTransTest {
+  -- The (Amb result, Int) pairs that we plan to evaluate. Might be smaller than the full Amb.
+  count :: Int,
+  pairs :: [(Int, Maybe Int)],
+  m :: a (Writer [Int]) Int
+}
+
+ambTransTest :: (MonadTrans a, Amb (a (Writer [Int]))) => Int -> [(Int, Maybe Int)] -> AmbTransTest a
+ambTransTest count pairs = let count = min count $ length pairs
+                               ats = (\(w, mt) -> lift (tell [w]) >> maybe afail return mt) <$> pairs
+                           in AmbTransTest {
+                             count = count,
+                             pairs = pairs,
+                             m = join . amb $ ats
+                           }
+
+arbAmbTransTest :: (MonadTrans a, Amb (a (Writer [Int]))) => Gen (AmbTransTest a)
+arbAmbTransTest = ambTransTest <$> arbitrary <*> arbitrary
+
+shrinkAmbTransTest :: (MonadTrans a, Amb (a (Writer [Int]))) => AmbTransTest a -> [AmbTransTest a]
+shrinkAmbTransTest ts = join [shrink1 ts, shrink2 ts] where
+  shrink1 AmbTransTest { count = c0, pairs = p0 } = (`ambTransTest` p0) <$> shrink c0
+  shrink2 AmbTransTest { count = c, pairs = p0 } = ambTransTest c <$> shrink p0
 
 tests :: IO [Test]
 tests = return

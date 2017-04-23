@@ -16,11 +16,10 @@ import Control.Monad.Identity
 import Control.Monad.Trans
 import Data.Foldable (toList)
 
+-- TODO: no reason not to use fundeps here
+-- TODO: call it AmbFoldable
 class (Monad m, m ~ Target f) => AmbResult f m where
   type Target f :: * -> *
-  -- Note that although laziness is not guaranteed, this is at least strict in the wrapping monad.
-  -- So it does not support, for example, partial evaluation of monads with side effects.
-  -- If you want to only partially evaluate the underlying monad, use ambHead.
   ambFoldRT :: (t -> r -> r) -> (r -> r) -> r -> f t -> m r
   -- ambHead :: Int -> f t -> f t
 
@@ -63,9 +62,8 @@ ambShow name as = name ++ "[" ++ (show . toList $ asMaybeFoldable as) ++ "]"
 class Monad a => Amb a where
   -- The reason we use [], instead of the more general Foldable, is because amb must be strict in the LHS but not
   -- the RHS of the fold. The [] functor encapsulates this naturally.
+  -- TODO: consider using Foldable anyway.
   amb :: [t] -> a t
-  -- t is, of course, unused here
-  -- TODO: need to write some failure laws and test fail.
   afail :: a t
 
 ambMaybe :: Amb a => [Maybe t] -> a t
