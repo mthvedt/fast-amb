@@ -16,13 +16,16 @@ cabal-version:       >=1.10
 
 library
   build-depends:     base,
-                     mtl
+                     mtl,
+                     template-haskell,
 
-                    --  hashable,
-                    --  unordered-containers,
-                    --  vector
+                     containers,
+                     hashable,
+                     lens,
+                     unordered-containers,
+                     vector
   hs-source-dirs:    src
-  exposed-modules:   Amb
+  exposed-modules:   Amb, Fact
   default-language:  Haskell2010
 
 Test-Suite test
