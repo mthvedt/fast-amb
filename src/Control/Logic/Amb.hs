@@ -9,7 +9,7 @@
 -- Continuation-passing implementation of Amb.
 -- Inspired by https://ifl2014.github.io/submissions/ifl2014_submission_13.pdf.
 
-module Amb where
+module Control.Logic.Amb where
 
 import Control.Monad
 import Control.Monad.Identity
