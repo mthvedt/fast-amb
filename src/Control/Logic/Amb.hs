@@ -16,42 +16,53 @@ import Control.Monad.Identity
 import Control.Monad.Trans
 import Data.Foldable (toList)
 
--- TODO: no reason not to use fundeps here
--- TODO: call it AmbFoldable
-class (Monad m, m ~ Target f) => AmbResult f m where
-  type Target f :: * -> *
-  ambFoldRT :: (t -> r -> r) -> (r -> r) -> r -> f t -> m r
+class Monad (Unlift a) => AmbFold a where
+  type Unlift a :: * -> *
+  ambFoldRT :: (t -> r -> (Unlift a) r) -> (r -> (Unlift a) r) -> r -> a t -> (Unlift a) r
 
 -- TODO test all of these
-ambFoldLT' :: (AmbResult f m) => (r -> t -> r) -> (r -> r) -> r -> f t -> m r
-ambFoldLT' cf ff z f = ambFoldRT cfl ffl id f <*> return z where
+ambFoldLT' :: (AmbFold a) => (r -> t -> (Unlift a) r) -> (r -> (Unlift a) r) -> r -> a t -> (Unlift a) r
+ambFoldLT' c0 f0 z xs = unwrap $ ambFoldRT mc mf id xs where
   -- This transforms a list into a series of (strict) updates on the initial value z.
-  -- Because foldr is lazy, the value cl is only partially evaluated when it is (tail-recursively)
-  -- applied to the strict value (cf zl x).
-  cfl x cl zl = cl $! cf zl x
-  ffl cl zl = cl $! ff zl
+  -- We note that the function cont, of type m r -> m r, is finitely bounded because foldr is lazy.
+  -- So a foldr is turned into a strict foldl in finite space.
+  -- c :: Monad m => t -> (m r -> m r) -> m r -> m r
+  c x cont macc = cont $! macc >>= \acc -> c0 acc x
+  -- mc :: Monad m => t -> (m r -> m r) -> m (m r -> m r)
+  mc x cont = return $ c x cont
+  -- f :: Monad m => (m r -> m r) -> m r -> m r
+  f cont macc = cont $! macc >>= f0
+  -- mf :: Monad m => (m r -> m r) -> m (m r -> m r)
+  mf = return . f
+  -- unwrap :: Monad m => r -> m (m r -> m r) -> m r
+  unwrap zl = join $ zl <*> return (return z)
 
-ambFoldR :: (AmbResult f Identity) => (t -> r -> r) -> (r -> r) -> r -> f t -> r
-ambFoldR cf ff z ts = runIdentity $ ambFoldRT cf ff z ts
+ambFoldR :: (AmbFold a, Unlift a ~ Identity) => (t -> r -> r) -> (r -> r) -> r -> a t -> r
+ambFoldR c f z a = runIdentity $ ambFoldRT (\t r -> return $ c t r) (return . f) z a
 
-ambFoldL' :: (AmbResult f Identity) => (r -> t -> r) -> (r -> r) -> r -> f t -> r
-ambFoldL' cf ff z ts = runIdentity $ ambFoldLT' cf ff z ts
+ambFoldL' :: (AmbFold a, Unlift a ~ Identity) => (r -> t -> r) -> (r -> r) -> r -> a t -> r
+ambFoldL' c f z a = runIdentity $ ambFoldLT' (\r t -> return $ c r t) (return . f) z a
 
 newtype ChurchFoldable t = ChurchFoldable (forall r. (t -> r -> r) -> r -> r)
 
-asFoldable :: (AmbResult a Identity) => a t -> ChurchFoldable t
-asFoldable a = ChurchFoldable $ \f z -> runIdentity $ ambFoldRT f id z a
+asFoldable :: (AmbFold a, Unlift a ~ Identity) => a t -> ChurchFoldable t
+asFoldable a = ChurchFoldable $ \f z -> runIdentity $ let
+  mf t r = return $ f t r
+  in ambFoldRT mf return z a
 
 instance Foldable ChurchFoldable where
-  foldr fn z (ChurchFoldable f) = f fn z
+  foldr c z (ChurchFoldable f) = f c z
 
-asMaybeFoldable :: (AmbResult a Identity) => a t -> ChurchFoldable (Maybe t)
-asMaybeFoldable a = ChurchFoldable $ \f z -> runIdentity $ ambFoldRT (f . Just) (f Nothing) z a
+asMaybeFoldable :: (AmbFold a, Unlift a ~ Identity) => a t -> ChurchFoldable (Maybe t)
+asMaybeFoldable a = ChurchFoldable $ \f z -> runIdentity $ let
+  mfjust t r = return $ f (Just t) r
+  mfnothing r = return $ f Nothing r
+  in ambFoldRT mfjust mfnothing z a
 
-ambEq :: (AmbResult a Identity, AmbResult b Identity, Eq t) => a t -> b t -> Bool
+ambEq :: (AmbFold a, Unlift a ~ Identity, AmbFold b, Unlift b ~ Identity, Eq t) => a t -> b t -> Bool
 ambEq as bs = toList (asMaybeFoldable as) == toList (asMaybeFoldable bs)
 
-ambShow :: (AmbResult a Identity, Show t) => String -> a t -> String
+ambShow :: (AmbFold a, Unlift a ~ Identity, Show t) => String -> a t -> String
 ambShow name as = name ++ "[" ++ (show . toList $ asMaybeFoldable as) ++ "]"
 
 -- TODO: foldable
@@ -114,9 +125,9 @@ instance MonadTrans ChurchAmbT where
   -- The only time we use m as a monad.
   lift mx = ChurchAmbT $ \c _ z -> mx >>= \x -> c x z
 
-instance Monad m => AmbResult (ChurchAmbT m) m where
-  type Target (ChurchAmbT m) = m
-  ambFoldRT cf ff z xs = runChurchAmbT xs (fmap . cf) (fmap ff) (return z)
+instance Monad m => AmbFold (ChurchAmbT m) where
+  type Unlift (ChurchAmbT m) = m
+  ambFoldRT cf ff z xs = runChurchAmbT xs (\t mr -> mr >>= cf t) (>>= ff) (return z)
 
 instance Eq a => Eq (ChurchAmbT Identity a) where
   (==) = ambEq
@@ -206,10 +217,10 @@ instance MonadTrans ScottAmbT where
   -- The only time we use m as a monad.
   lift mx = ScottAmbT $ \c _ _ -> mx >>= \x -> c x ambzero
 
-instance Monad m => AmbResult (ScottAmbT m) m where
-  type Target (ScottAmbT m) = m
+instance Monad m => AmbFold (ScottAmbT m) where
+  type Unlift (ScottAmbT m) = m
   ambFoldRT cf ff z xs = runScottAmbT xs cf1 ff1 (return z) where
-    cf1 first rest = cf first <$> ambFoldRT cf ff z rest
+    cf1 first rest = ambFoldRT cf ff z rest >>= cf first
     ff1 = ambFoldRT cf ff z
 
 instance Eq a => Eq (ScottAmbT Identity a) where
@@ -272,11 +283,11 @@ instance MonadTrans ParigotAmbT where
   -- The only time we use m as a monad.
   lift mx = ParigotAmbT $ \c _ z -> mx >>= \x -> c x ambzero z
 
-instance Monad m => AmbResult (ParigotAmbT m) m where
-  type Target (ParigotAmbT m) = m
+instance Monad m => AmbFold (ParigotAmbT m) where
+  type Unlift (ParigotAmbT m) = m
   ambFoldRT cf ff z0 xs0 =
     -- Here we see the advantage of laziness: _xs is never used.
-    runParigotAmbT xs0 (\x _xs z -> cf x <$> z) (\_xs z -> ff <$> z) $ return z0
+    runParigotAmbT xs0 (\x _xs z -> z >>= cf x) (\_xs z -> z >>= ff) $ return z0
 
 instance Eq a => Eq (ParigotAmbT Identity a) where
   (==) = ambEq
@@ -293,16 +304,7 @@ newtype FastAmbT m t = FastAmbT {
 type FastAmb = FastAmbT Identity
 
 instance Functor (FastAmbT f) where
-  -- Need to define fmap because we use it in >>=
-  -- Note that though this looks similarly expensive to ScottAmb, in the case where fmap is inlined
-  -- in the same context as the amb value xs,
-  -- the expensive part is the boxing/unboxing terms `xs1` and `f <$> xs1`.
-  -- In most Parigot folds neither are evaluated.
   fmap = liftM
-  -- fmap f xs = ParigotAmbT $ \cy fy z -> let
-  --   cx x xs1 = cy (f x) $ f <$> xs1
-  --   fx xs1 = fy $ f <$> xs1
-  --   in runParigotAmbT xs cx fx z
 
 instance Applicative (FastAmbT a) where
   pure = return
@@ -335,11 +337,11 @@ instance MonadTrans FastAmbT where
   -- The only time we use m as a monad.
   lift mx = FastAmbT $ \rest c _ z -> mx >>= \x -> c x rest z
 
-instance Monad m => AmbResult (FastAmbT m) m where
-  type Target (FastAmbT m) = m
+instance Monad m => AmbFold (FastAmbT m) where
+  type Unlift (FastAmbT m) = m
   ambFoldRT cf ff z0 xs0 =
     -- Here we see the advantage of laziness: the _xs args are never used.
-    runFastAmbT xs0 ambzero (\x _xs z -> cf x <$> z) (\_xs z -> ff <$> z) $ return z0
+    runFastAmbT xs0 ambzero (\x _xs z -> z >>= cf x) (\_xs z -> z >>= ff) (return z0)
 
 instance Eq a => Eq (FastAmbT Identity a) where
   (==) = ambEq
