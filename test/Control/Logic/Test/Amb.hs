@@ -2,7 +2,7 @@
   FlexibleContexts,
   FlexibleInstances,
   GeneralizedNewtypeDeriving,
-  KindSignatures,
+  Rank2Types,
   ScopedTypeVariables,
   TypeFamilies,
   ViewPatterns
@@ -14,55 +14,32 @@
 
 module Control.Logic.Test.Amb (ambTests) where
 
-import GHC.Prim
-
 import Control.Monad
 import Control.Monad.Identity
 import Control.Monad.State
 import Control.Monad.Trans
 import Data.Foldable (toList)
 
-import Control.DeepSeq
-
 import Control.Logic.Amb
 
 import Test.QuickCheck
 import Test.QuickCheck.Function
 import Test.QuickCheck.Gen
-import Test.QuickCheck.Random
 
 import Distribution.TestSuite.QuickCheck
 
-timeout :: Testable prop => prop -> Property
-timeout = within $ 1000 * 2
+type Harness c t = (Arbitrary c, Show c) => c -> t
 
-root :: Double -> Int -> Int
-root _ i = i
--- root d i = min i . round $ fromIntegral i ** d
+-- A small list, of maximium size 4.
+-- Needed because some of these tests get exponentially large.
+-- Note that "ListT is not a monad transformer" -> we can't just pass in large lists and take 4,
+-- because QuickCheck will always generate much larger lists.
+newtype SmallList t = SmallList { unsmall :: [t] }
+  deriving (Functor, Show)
 
-newtype ArbTwoThirds p = ArbTwoThirds { unArbTwoThirds :: p }
-  deriving Show
-
-instance Arbitrary p => Arbitrary (ArbTwoThirds p) where
-  arbitrary = scale (root (2 / 3)) arbitrary
-  shrink (ArbTwoThirds p) = ArbTwoThirds <$> shrink p
-
-newtype ArbOneThird p = ArbOneThird { unArbOneThird :: p }
-  deriving Show
-
-instance Arbitrary p => Arbitrary (ArbOneThird p) where
-  arbitrary = scale (root (1 / 3)) arbitrary
-  shrink (ArbOneThird p) = ArbOneThird <$> shrink p
-
--- Cases are injective, so you probably want to use a new type for each one.
--- We express this with type families. Fundeps are less verbose, but are more likely to cause
--- situations that GHC considers undecidable, since you often want to define cases in a fairly
--- generic way.
--- TODO doc for reals
-class (Arbitrary (Case c), Show (Case c), NFData (Case c)) => Harness c where
-  type Case c :: *
-  type Target c :: *
-  gen :: c -> Case c -> Target c
+instance Arbitrary t => Arbitrary (SmallList t) where
+  arbitrary = SmallList <$> scale (min 4) arbitrary
+  shrink (SmallList xss) = SmallList <$> shrink xss
 
 class TestEq t where
   runEq :: t -> t -> Bool
@@ -70,143 +47,130 @@ class TestEq t where
 -- Per Haskell's free theorems, any parameterized type which works on any given type parameter
 -- works on all type parameters (if that parameter is unconstrained).
 {-# ANN axiomFunctorId "HLint: ignore Functor law" #-}
-axiomFunctorId :: (Functor f, Harness c, Target c ~ f Int, TestEq (f Int)) => c -> Case c -> Bool
-axiomFunctorId c g = (id <$> fx) `runEq` fx where
-  fx = gen c g
+axiomFunctorId :: (Functor f, TestEq (f Int)) => (c -> f Int) -> c -> Bool
+axiomFunctorId h c = (id <$> fx) `runEq` fx where
+  fx = h c
 
 {-# ANN axiomFunctorComp "HLint: ignore Functor law" #-}
-axiomFunctorComp :: (Functor f, Harness c, Target c ~ f Int, TestEq (f Int)) =>
-  c -> Case c -> Fun Int Int -> Fun Int Int -> Bool
-axiomFunctorComp c g (apply -> fn1) (apply -> fn2) = (fn2 . fn1 <$> fx) `runEq` (fmap fn2 . fmap fn1 $ fx) where
-  fx = gen c g
+axiomFunctorComp :: (Functor f, TestEq (f Int)) =>
+  (c -> f Int) -> c -> Fun Int Int -> Fun Int Int -> Bool
+axiomFunctorComp h c (apply -> fn1) (apply -> fn2) = (fn2 . fn1 <$> fx) `runEq` (fmap fn2 . fmap fn1 $ fx) where
+  fx = h c
 
 -- TODO: applicative axioms
-testFunctor :: (Functor f, Harness c, Target c ~ f Int, TestEq (f Int)) => String -> c -> Test
-testFunctor typeclass_desc c = testGroup ("Functor axioms for " ++ typeclass_desc)
-  [ testProperty "Functor identity law" . timeout $ axiomFunctorId c
-  , testProperty "Functor composition law" . timeout $ axiomFunctorComp c
+testFunctor :: (Functor f, TestEq (f Int), Arbitrary c, Show c) => String -> Harness c (f Int) -> Test
+testFunctor typeclass_desc h = testGroup ("Functor axioms for " ++ typeclass_desc)
+  [ testProperty "Functor identity law" $ axiomFunctorId h
+  , testProperty "Functor composition law" $ axiomFunctorComp h
   ]
 
 {-# ANN axiomMonadLeftId "HLint: ignore Monad law, left identity" #-}
-axiomMonadLeftId :: (Monad m, Harness c, Target c ~ m Int, TestEq (m Int)) => c -> Int -> Fun Int (Case c) -> Bool
-axiomMonadLeftId c i (apply -> fcase) = (return i >>= f) `runEq` f i where
-  f = gen c . fcase
+axiomMonadLeftId :: (Monad m, TestEq (m Int), Arbitrary c, Show c) => Harness c (m Int) -> Int -> Fun Int c -> Bool
+axiomMonadLeftId h i (apply -> fcase) = (return i >>= f) `runEq` f i where
+  f = h . fcase
 
 {-# ANN axiomMonadRightId "HLint: ignore Monad law, right identity" #-}
-axiomMonadRightId :: (Monad m, Harness c, Target c ~ m Int, TestEq (m Int)) => c -> Case c -> Bool
-axiomMonadRightId c g = (mx >>= return) `runEq` mx where
-  mx = gen c g
+axiomMonadRightId :: (Monad m, TestEq (m Int), Arbitrary c, Show c) => Harness c (m Int) -> c -> Bool
+axiomMonadRightId h c = (mx >>= return) `runEq` mx where
+  mx = h c
 
 {-# ANN axiomMonadAssoc "HLint: ignore Functor law" #-}
-axiomMonadAssoc :: (Monad m, Harness c, Target c ~ m Int, TestEq (m Int)) =>
-  c -> Case c -> Fun Int (Case c) -> Fun Int (Case c) -> Bool
-axiomMonadAssoc c g (apply -> fcase) (apply -> gcase) = ((mx >>= mf) >>= mg) `runEq` (mx >>= (mf >=> mg)) where
-  mx = gen c g
-  mf = gen c . fcase
-  mg = gen c . gcase
+axiomMonadAssoc :: (Monad m, TestEq (m Int), Arbitrary c, Show c) =>
+  Harness c (m Int) -> c -> Fun Int c -> Fun Int c -> Bool
+axiomMonadAssoc h c (apply -> fcase) (apply -> gcase) = ((mx >>= mf) >>= mg) `runEq` (mx >>= (mf >=> mg)) where
+  mx = h c
+  mf = h . fcase
+  mg = h . gcase
 
-testMonad :: (Monad m, Harness c, Target c ~ m Int, TestEq (m Int)) => String -> c -> Test
-testMonad typeclass_desc c = testGroup ("Monad axioms for " ++ typeclass_desc)
-  [ testFunctor typeclass_desc c
-  , testProperty "Monad left identity law" . timeout $ axiomMonadLeftId c
-  , testProperty "Monad right identity law" . timeout $ axiomMonadRightId c
-  , testProperty "Monad associativity law" . timeout $ axiomMonadAssoc c
+testMonad :: (Monad m, TestEq (m Int), Arbitrary c, Show c) => String -> Harness c (m Int) -> Test
+testMonad typeclass_desc h = testGroup ("Monad axioms for " ++ typeclass_desc)
+  [ testFunctor typeclass_desc h
+  , testProperty "Monad left identity law" $ axiomMonadLeftId h
+  , testProperty "Monad right identity law" $ axiomMonadRightId h
+  , testProperty "Monad associativity law" $ axiomMonadAssoc h
   ]
 
-axiomMTId :: (MonadTrans t, Monad m, Monad (t m), Harness c, Target c ~ t m Int, TestEq (t m Int)) =>
-  c -> Int -> Bool
-axiomMTId (_witness :: c) i = (return i :: Target c) `runEq` lift (return i)
+axiomMTId :: (MonadTrans t, Monad m, Monad (t m), TestEq (t m Int), Arbitrary c, Show c) =>
+  Harness c (t m Int) -> Int -> Bool
+axiomMTId (_w :: Harness c (t m Int)) i = (return i :: t m Int) `runEq` lift (return i)
 
 -- TODO is this wrong?
-axiomMTDistributive :: (MonadTrans t, Monad m, Monad (t m),
-    Harness c, Target c ~ t m Int, Harness c0, Target c0 ~ m Int, TestEq (t m Int)) =>
-  c0 -> c -> Case c0 -> Fun Int (Case c0) -> Bool
-axiomMTDistributive c0 (_witness :: c) g (apply -> fcase) =
-  lift (ma >>= mf) `runEq` ((lift ma :: Target c) >>= (lift . mf)) where
-    ma = gen c0 g
-    mf = gen c0 . fcase
+axiomMTDistributive :: (MonadTrans t, Monad m, Monad (t m), TestEq (t m Int), Arbitrary c1, Show c1) =>
+  Harness c0 (t m Int) -> Harness c1 (m Int) -> c1 -> Fun Int c1 -> Bool
+axiomMTDistributive (h0 :: Harness c0 (t m Int)) h1 g (apply -> fcase) =
+  lift (ma >>= mf) `runEq` ((lift ma :: t m Int) >>= (lift . mf)) where
+    ma = h1 g
+    mf = h1 . fcase
 
-testMonadTrans :: (MonadTrans t, Monad m, Monad (t m),
-    Harness c, Target c ~ t m Int, Harness c0, Target c0 ~ m Int, TestEq (t m Int)) =>
-  String -> c0 -> c -> Test
-testMonadTrans typeclass_desc c0 c =  testGroup ("MonadTrans axioms for " ++ typeclass_desc)
-  [ testProperty "MonadTrans identity law" . timeout $ axiomMTId c
-  , testProperty "MonadTrans distributive law" . timeout $ axiomMTDistributive c0 c
+testMonadTrans :: (MonadTrans t, Monad m, Monad (t m), TestEq (t m Int),
+    Arbitrary c0, Show c0, Arbitrary c1, Show c1) =>
+  String -> Harness c0 (t m Int) -> Harness c1 (m Int) -> Test
+testMonadTrans typeclass_desc h0 h1 =  testGroup ("MonadTrans axioms for " ++ typeclass_desc)
+  [ testProperty "MonadTrans identity law" $ axiomMTId h0
+  , testProperty "MonadTrans distributive law" $ axiomMTDistributive h0 h1
   ]
 
 -- Tests that ambs are depth-first.
-axiomDepthFirst :: (Amb a, Harness c, Target c ~ a Int, TestEq (a Int)) => c -> ArbOneThird [[Case c]] -> Bool
-axiomDepthFirst c cases = ambcat (ambcat <$> as) `runEq` join (ambcat <$> amb as) where
-  as = fmap (gen c) <$> force (unArbOneThird cases)
+axiomDepthFirst :: (Amb a, TestEq (a Int), Arbitrary c, Show c) =>
+  Harness c (a Int) -> SmallList (SmallList c) -> Bool
+axiomDepthFirst h cases = ambcat (ambcat <$> as) `runEq` join (ambcat <$> amb as) where
+  as = unsmall $ unsmall . fmap h <$> cases
 --
-testAmb :: (Amb a, Harness c, Target c ~ a Int, TestEq (a Int)) => String -> c -> Test
-testAmb typeclass_desc c = testGroup ("Amb tests for " ++ typeclass_desc)
-  [ testMonad typeclass_desc c
-  , testProperty "Ambs are depth-first" . timeout $ axiomDepthFirst c
+testAmb :: (Amb a, TestEq (a Int), Arbitrary c, Show c) => String -> Harness c (a Int) -> Test
+testAmb typeclass_desc h = testGroup ("Amb tests for " ++ typeclass_desc)
+  [ testMonad typeclass_desc h
+  , testProperty "Ambs are depth-first" $ axiomDepthFirst h
   ]
 
-newtype TestState a = TestState (State Int a)
-  deriving (Functor, Applicative, Monad)
+-- newtype TestState a = TestState (State Int a)
+--   deriving (Functor, Applicative, Monad)
+--
+-- testState :: (Int -> (a, Int)) -> TestState a
+-- testState = TestState . state
+--
+-- runTestState :: TestState a -> Int -> (a, Int)
+-- runTestState (TestState s) = runState s
+--
+-- instance Show (TestState a) where
+--   show (TestState s) = show $ Blind s
 
-testState :: (Int -> (a, Int)) -> TestState a
-testState = TestState . state
+stateHarness :: (Int, Fun Int Int) -> State Int Int
 
-runTestState :: TestState a -> Int -> (a, Int)
-runTestState (TestState s) = runState s
+stateHarness (x, apply -> f) = state $ \s -> (x, f s)
 
-instance Show (TestState a) where
-  show (TestState s) = show $ Blind s
+-- data StateCase = StateCase
 
-data IdentityCase = IdentityCase
+-- instance Harness StateCase where
+--   type Case StateCase = (Int, Int)
+--   type Target StateCase = TestState Int
+--   gen _ (x, y) = testState $ \i -> (x, x * 524287 + y * 8191 + i)
 
-instance Harness IdentityCase where
-  type Case IdentityCase = Int
-  type Target IdentityCase = Identity Int
-  gen _ = return
+type AmbTHarness c a m = AmbTrans a m => Harness (SmallList (Maybe c)) (a m Int)
 
-data StateCase = StateCase
+ambTHarness :: (AmbTrans a m, Arbitrary c, Show c) => Harness c (m Int) -> AmbTHarness c a m
+ambTHarness g0 gs = let toAmb (Just v) = lift v
+                        toAmb Nothing = afail
+                        gs' = fmap g0 <$> gs
+                        amblist = toAmb <$> unsmall gs'
+                    in ambcat amblist
 
-instance Harness StateCase where
-  type Case StateCase = (Int, Int)
-  type Target StateCase = TestState Int
-  gen _ (x, y) = testState $ \i -> (x, x * 524287 + y * 8191 + i)
-
--- TODO: nomenclautre. Is 'Case' correct?
--- TODO: rename AmbTrans t -> AmbTrans a
--- TODO: consider renaming AmbTrans -> AmbT
-newtype AmbTHarness (a :: (* -> *) -> * -> *) (m :: * -> *) c = AmbTHarness c
-
-ambTCase :: c -> AmbTHarness a m c
-ambTCase = AmbTHarness
-
-instance (AmbTrans a m, Harness c, Target c ~ m Int) => Harness (AmbTHarness a m c) where
-  type Case (AmbTHarness a m c) = [Maybe (Case c)]
-  type Target (AmbTHarness a m c) = a m Int
-  gen (AmbTHarness c0) gs = let toAmb (Just v) = lift v
-                                toAmb Nothing = afail
-                                -- We don't *need* this force, but it helps debug when there's a performance
-                                -- problem in a test. Some of these tests are quite large.
-                                gs' = fmap (gen c0) <$> force gs
-                                amblist = toAmb <$> gs'
-                            in ambcat amblist
-
-testAmbT :: (AmbTrans a Identity, AmbTrans a TestState, TestEq (a Identity Int), TestEq (a TestState Int)) =>
+testAmbT :: (AmbTrans a Identity, AmbTrans a (State Int), TestEq (a Identity Int), TestEq (a (State Int) Int)) =>
   String -> a Identity Int -> Test
 testAmbT typeclass_desc (_witness :: a Identity Int) = testGroup ("AmbT suite tests for " ++ typeclass_desc)
-  [ testAmb typeclass_desc caseId
-  -- , testMonadTrans typeclass_desc StateCase caseState
-  -- , testAmb (typeclass_desc ++ " (as State transformer)") caseState
+  [ testAmb typeclass_desc hId
+  , testMonadTrans typeclass_desc hAmbT stateHarness
+  , testAmb (typeclass_desc ++ " (as State transformer)") hAmbT
   ] where
-    caseId :: AmbTHarness a Identity IdentityCase
-    caseId = ambTCase IdentityCase
-    caseState :: AmbTHarness a TestState StateCase
-    caseState = ambTCase StateCase
+    hId :: AmbTHarness Int a Identity
+    hId = ambTHarness return
+    hAmbT :: AmbTHarness (Int, Fun Int Int) a (State Int)
+    hAmbT = ambTHarness stateHarness
 
 instance (AmbTrans a Identity, Eq t) => TestEq (a Identity t) where
   runEq = ambEq
 
-instance (AmbTrans a TestState, Eq t) => TestEq (a TestState t) where
-  a `runEq` b = runTestState (toMaybeListM a) 1 == runTestState (toMaybeListM b) 1
+instance (AmbTrans a (State Int) , Eq t) => TestEq (a (State Int)  t) where
+  a `runEq` b = runState (toMaybeListM a) 1 == runState (toMaybeListM b) 1
 
 ambTests :: Test
 ambTests = testGroup "Control.Logic.Amb"
