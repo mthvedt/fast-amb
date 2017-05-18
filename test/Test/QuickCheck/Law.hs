@@ -1,10 +1,7 @@
 {-# LANGUAGE
-  FlexibleContexts,
-  FlexibleInstances,
   GeneralizedNewtypeDeriving,
   Rank2Types,
   ScopedTypeVariables,
-  TypeFamilies,
   ViewPatterns
 #-}
 -- To prevent the rewriting of properties we wanted to test, we have:
@@ -12,23 +9,23 @@
   -fno-enable-rewrite-rules
 #-}
 
-module Control.Logic.Test.Amb (ambTests) where
+module Test.QuickCheck.Law where
 
 import Control.Monad
 import Control.Monad.Identity
 import Control.Monad.State
 import Control.Monad.Trans
-import Data.Foldable (toList)
-
-import Control.Logic.Amb
 
 import Test.QuickCheck
 import Test.QuickCheck.Function
-import Test.QuickCheck.Gen
 
+-- TODO: what test suites should we use if this lib is to be generic?
 import Distribution.TestSuite.QuickCheck
 
 type Harness c t = (Arbitrary c, Show c) => c -> t
+
+class TestEq t where
+  runEq :: t -> t -> Bool
 
 -- A small list, of maximium size 4.
 -- Needed because some of these tests get exponentially large.
@@ -40,9 +37,6 @@ newtype SmallList t = SmallList { unsmall :: [t] }
 instance Arbitrary t => Arbitrary (SmallList t) where
   arbitrary = SmallList <$> scale (min 4) arbitrary
   shrink (SmallList xss) = SmallList <$> shrink xss
-
-class TestEq t where
-  runEq :: t -> t -> Bool
 
 -- Per Haskell's free theorems, any parameterized type which works on any given type parameter
 -- works on all type parameters (if that parameter is unconstrained).
@@ -108,74 +102,4 @@ testMonadTrans :: (MonadTrans t, Monad m, Monad (t m), TestEq (t m Int),
 testMonadTrans typeclass_desc h0 h1 =  testGroup ("MonadTrans axioms for " ++ typeclass_desc)
   [ testProperty "MonadTrans identity law" $ axiomMTId h0
   , testProperty "MonadTrans distributive law" $ axiomMTDistributive h0 h1
-  ]
-
--- Tests that ambs are depth-first.
-axiomDepthFirst :: (Amb a, TestEq (a Int), Arbitrary c, Show c) =>
-  Harness c (a Int) -> SmallList (SmallList c) -> Bool
-axiomDepthFirst h cases = ambcat (ambcat <$> as) `runEq` join (ambcat <$> amb as) where
-  as = unsmall $ unsmall . fmap h <$> cases
---
-testAmb :: (Amb a, TestEq (a Int), Arbitrary c, Show c) => String -> Harness c (a Int) -> Test
-testAmb typeclass_desc h = testGroup ("Amb tests for " ++ typeclass_desc)
-  [ testMonad typeclass_desc h
-  , testProperty "Ambs are depth-first" $ axiomDepthFirst h
-  ]
-
--- newtype TestState a = TestState (State Int a)
---   deriving (Functor, Applicative, Monad)
---
--- testState :: (Int -> (a, Int)) -> TestState a
--- testState = TestState . state
---
--- runTestState :: TestState a -> Int -> (a, Int)
--- runTestState (TestState s) = runState s
---
--- instance Show (TestState a) where
---   show (TestState s) = show $ Blind s
-
-stateHarness :: (Int, Fun Int Int) -> State Int Int
-
-stateHarness (x, apply -> f) = state $ \s -> (x, f s)
-
--- data StateCase = StateCase
-
--- instance Harness StateCase where
---   type Case StateCase = (Int, Int)
---   type Target StateCase = TestState Int
---   gen _ (x, y) = testState $ \i -> (x, x * 524287 + y * 8191 + i)
-
-type AmbTHarness c a m = AmbTrans a m => Harness (SmallList (Maybe c)) (a m Int)
-
-ambTHarness :: (AmbTrans a m, Arbitrary c, Show c) => Harness c (m Int) -> AmbTHarness c a m
-ambTHarness g0 gs = let toAmb (Just v) = lift v
-                        toAmb Nothing = afail
-                        gs' = fmap g0 <$> gs
-                        amblist = toAmb <$> unsmall gs'
-                    in ambcat amblist
-
-testAmbT :: (AmbTrans a Identity, AmbTrans a (State Int), TestEq (a Identity Int), TestEq (a (State Int) Int)) =>
-  String -> a Identity Int -> Test
-testAmbT typeclass_desc (_witness :: a Identity Int) = testGroup ("AmbT suite tests for " ++ typeclass_desc)
-  [ testAmb typeclass_desc hId
-  , testMonadTrans typeclass_desc hAmbT stateHarness
-  , testAmb (typeclass_desc ++ " (as State transformer)") hAmbT
-  ] where
-    hId :: AmbTHarness Int a Identity
-    hId = ambTHarness return
-    hAmbT :: AmbTHarness (Int, Fun Int Int) a (State Int)
-    hAmbT = ambTHarness stateHarness
-
-instance (AmbTrans a Identity, Eq t) => TestEq (a Identity t) where
-  runEq = ambEq
-
-instance (AmbTrans a (State Int) , Eq t) => TestEq (a (State Int)  t) where
-  a `runEq` b = runState (toMaybeListM a) 1 == runState (toMaybeListM b) 1
-
-ambTests :: Test
-ambTests = testGroup "Control.Logic.Amb"
-  [ testAmbT "ChurchAmb" (return 1 :: ChurchAmb Int)
-  -- , testCase "ScottAmb" (return 1 :: ScottAmb Int)
-  -- , testCase "ParigotAmb" (return 1 :: ParigotAmb Int)
-  -- , testCase "FastAmb" (return 1 :: FastAmb Int)
   ]
