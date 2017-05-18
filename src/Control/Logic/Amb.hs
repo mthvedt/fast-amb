@@ -22,6 +22,7 @@ class (Amb a, Monad m) => AmbFold m a | a -> m where
 
 -- TODO test all of these
 ambFoldLT' :: AmbFold m a => (r -> t -> m r) -> (r -> m r) -> r -> a t -> m r
+{-# INLINABLE ambFoldLT' #-}
 ambFoldLT' c0 f0 z xs = unwrap $ ambFoldRT mc mf id xs where
   -- This transforms a list into a series of (strict) updates on the initial value z.
   -- We note that the function cont, of type m r -> m r, is finitely bounded because foldr is lazy.
@@ -38,63 +39,105 @@ ambFoldLT' c0 f0 z xs = unwrap $ ambFoldRT mc mf id xs where
   unwrap zl = join $ zl <*> return (return z)
 
 ambFoldR :: AmbFold Identity a => (t -> r -> r) -> (r -> r) -> r -> a t -> r
+{-# INLINABLE ambFoldR #-}
 ambFoldR c f z a = runIdentity $ ambFoldRT (\t r -> return $ c t r) (return . f) z a
 
 ambFoldL' :: AmbFold Identity a => (r -> t -> r) -> (r -> r) -> r -> a t -> r
+{-# INLINABLE ambFoldL' #-}
 ambFoldL' c f z a = runIdentity $ ambFoldLT' (\r t -> return $ c r t) (return . f) z a
 
 newtype ChurchFoldable t = ChurchFoldable (forall r. (t -> r -> r) -> r -> r)
 
 instance Foldable ChurchFoldable where
+  {-# INLINABLE foldr #-}
   foldr c z (ChurchFoldable f) = f c z
 
 asFoldable :: AmbFold Identity a => a t -> ChurchFoldable t
+{-# INLINABLE asFoldable #-}
 asFoldable a = ChurchFoldable $ \f z -> runIdentity $ let
   mf t r = return $ f t r
   in ambFoldRT mf return z a
 
 asMaybeFoldable :: AmbFold Identity a => a t -> ChurchFoldable (Maybe t)
+{-# INLINABLE asMaybeFoldable #-}
 asMaybeFoldable a = ChurchFoldable $ \f z -> runIdentity $ let
   mfjust t r = return $ f (Just t) r
   mfnothing r = return $ f Nothing r
   in ambFoldRT mfjust mfnothing z a
 
 toMaybeListM :: AmbFold m a => a t -> m [Maybe t]
+{-# INLINABLE toMaybeListM #-}
 toMaybeListM = ambFoldRT (\x xs -> return $ Just x:xs) (\xs -> return $ Nothing:xs) []
 
 ambEq :: (AmbFold Identity a, AmbFold Identity b, Eq t) => a t -> b t -> Bool
+{-# INLINABLE ambEq #-}
 ambEq as bs = toList (asMaybeFoldable as) == toList (asMaybeFoldable bs)
 
 ambShow :: (AmbFold Identity a, Show t) => String -> a t -> String
+{-# INLINABLE ambShow #-}
 ambShow name as = name ++ "[" ++ (show . toList $ asMaybeFoldable as) ++ "]"
 
 -- TODO: foldable
 -- TODO invent some invariants for Amb as a transformer
--- Amb laws: join (amb <$> fs) == amb (join fs) where fs is a list of Foldables.
--- When a is a monad transformer, the transformed monad must be sequenced depth-first. TODO: test.
+-- Amb laws:
+-- Let [[as]] be a list of list of ambs. Then
+-- ambcat (ambcat <$> as) == join (ambcat <$> amb as), where ambcat = join . amb.
 class Monad a => Amb a where
-  -- The reason we use [], instead of the more general Foldable, is because amb must be strict in the LHS but not
-  -- the RHS of the fold. The [] functor encapsulates this naturally.
-  -- TODO: consider using Foldable anyway.
+  -- Creates an Amb which returns the given elements in order, never failing.
+  --
+  -- Ambs are often split into (first, rest) pairs, and list is the simplest functor
+  -- that does this performantly. This is why the amb function operates on a list,
+  -- instead of the more general Foldable.
   amb :: [t] -> a t
+  -- Creates an Amb which fails once.
   afail :: a t
 
 ambzero :: Amb a => a t
+{-# INLINABLE ambzero #-}
 ambzero = amb []
 
 ambMaybe :: Amb a => [Maybe t] -> a t
+{-# INLINABLE ambMaybe #-}
 ambMaybe mts = join . amb $ f <$> mts where
   f (Just x) = return x
   f Nothing = afail
 
 ambcat :: Amb a => [a t] -> a t
+{-# INLINABLE ambcat #-}
 ambcat = join . amb
+
+-- An AmbTrans is a monad transformer obeying the Amb and AmbTrans laws, viz:
+-- join . amb $ amblift <$> ms  === amblift (join ms) where ms is of type [[m x]].
+-- TODO need to be able to mix with regular amb.
+-- TODO: maybe use MFunctor instead, or together with this.
+class (MonadTrans t, Monad m, Amb (t m), AmbFold m (t m)) => AmbTrans t m where
+
+amblift :: AmbTrans t m => [m a] -> t m a
+{-# INLINABLE amblift #-}
+amblift ms = ambMaybeLift $ Just <$> ms
+
+-- Note that it's a Maybe, not a MaybeT. In amb, the producer of the amb can't assign
+-- monadic actions to failures.
+ambMaybeLift :: AmbTrans t m => [Maybe (m a)] -> t m a
+{-# INLINABLE ambMaybeLift #-}
+ambMaybeLift mms = join . amb $ f <$> mms where
+  f (Just x) = lift x
+  f Nothing = afail
 
 -- An AmbLogic is an Amb that supports uncons: getting a first and a rest.
 -- Minimal complete definition: ambuncons | ambpeek.
+-- Must obey the following laws:
+-- * ambpeek a f == ambuncons a >>= uncurry f,
+-- * ambuncons $ ambcat [as] == ambuncons . ambcat $ ambuncons <$> [as], and
+-- * ambuncons $ ambcat [as] == ambuncons $ first as when when first as is non-empty.
+-- In particular,
+-- * let Amb a => (x, y), where x converges and is nonempty, and y diverges.
+-- Then ambuncons $ ambcat [x, y] should not diverge when evaluated.
+-- * If a is a monad transformer, a should not behave like ListT where
+-- the entire list of monadic values is always evaluated.
 class Amb a => AmbLogic a where
   ambpeek :: a t -> (t -> a t -> a r) -> a r
-  ambpeek a f =  ambuncons a >>= uncurry f
+  ambpeek a f = ambuncons a >>= uncurry f
   ambuncons :: a t -> a (t, a t)
   ambuncons a = ambpeek a $ curry return
 
@@ -129,6 +172,87 @@ class Amb a => AmbLogic a where
 -- class MonadTrans t => MonadFunc t where
 --   fmapT :: (Monad m, Monad n) => (forall x. m x -> n x) -> t m v -> t n v
 
+data ConcreteAmbT m t = ConcreteNil | ConcreteFail (ConcreteAmbT m t) | ConcreteCons t (m (ConcreteAmbT m t))
+--
+-- type ConcreteAmb = ConcreteAmbT Identity
+--
+-- instance Functor (ConcreteAmbT f) where
+--   fmap = liftM
+--   {-# INLINABLE fmap #-}
+--
+-- instance Applicative (ConcreteAmbT a) where
+--   pure = return
+--   {-# INLINABLE pure #-}
+--   (<*>) = ap
+--   {-# INLINABLE (<*>) #-}
+--
+-- instance Monad (ConcreteAmbT m) where
+--   return x = amb [x]
+--   {-# INLINABLE return #-}
+--   -- note that f is called for failures in both the lhs and the rhs.
+--   -- Also, because both the outer and inner runAmbs are right-associative, we have proper right-associativity
+--   -- which yields the laziness and O(n) asymptotics we need.
+--   -- TODO: test both above assertions.
+--   -- TODO: test the underlying binding is correct. It should be. See 'ListT done right' for test ideas.
+--   ConcreteNil >>= fxys = ConcreteNil
+--   ConcreteFail mf >>= fxys = ConcreteFail $ mf >>= fxys
+--   -- TODO: x or t? which is idioamtic?
+--   ConcreteCons t mrest >>= fxys =
+--   {-# INLINABLE (>>=) #-}
+--
+-- instance MonadTrans ChurchAmbT where
+--   -- The only time we use m as a monad.
+--   lift mx = ChurchAmbT $ \c _ z -> mx >>= \x -> c x z
+--   {-# INLINABLE lift #-}
+--
+-- instance Amb (ChurchAmbT m) where
+--   amb xs = ChurchAmbT $ \c _ z -> foldr c z xs
+--   {-# INLINABLE amb #-}
+--   afail = ChurchAmbT $ \_ f z -> f z
+--   {-# INLINABLE afail #-}
+--
+-- instance Monad m => AmbTrans ChurchAmbT m
+--
+-- -- instance MonadFunc ChurchAmbT where
+-- --   fmapT n a = ChurchAmbT $ \c0 f0 z0 -> let
+-- --     -- We run the original amb a with a return type m (n r),
+-- --     -- then use join . nat to strip away the extra m.
+-- --     -- c0 :: a -> n r -> n r. We need to make something of type a -> m (n r) -> m (n r)
+-- --     c x mnz = c0 x <$> mnz
+-- --     f mnz = f0 <$> mnz
+-- --     z = return z0
+-- --     in join . n $ runChurchAmbT a c f z
+--
+-- instance Monad m => AmbFold m (ChurchAmbT m) where
+--   ambFoldRT cf ff z xs = runChurchAmbT xs (\t mr -> mr >>= cf t) (>>= ff) (return z)
+--   {-# INLINABLE ambFoldRT #-}
+--
+-- instance Monad m => AmbLogic (ChurchAmbT m) where
+--   ambuncons a0 = join . lift $ runChurchAmbT a0 c0 f0 z0 where
+--     -- The goal of c0 and f0 are to turn our original amb, a0, into an amb of type
+--     -- m (ChurchAmbT m (t, ChurchAmbT m t)), and then join it.
+--     -- c0, accepts a `t` and an `m (ChurchAmbT m (t, ChurchAmbT m t))` argument.
+--     -- Our goal is to convert those into `m (ChurchAmbT m (t, ChurchAmbT m t))`.
+--     c0 x msplitrest = return split where
+--       -- asplit :: ChurchAmbT m (t, ChurchAmbT m t)
+--       split = ChurchAmbT $ \csplit _ z -> csplit (x, rest) z where
+--         -- rest :: ChurchAmbT' m t, the rest of our original amb
+--         -- recall that splitrest is what happens when c0 is folded over the rest of our original amb.
+--         -- It is of type m (ChurchAmbT m (t, ChurchAmbT m t)).
+--         -- We need to turn it into a ChurchAmbT m t.
+--         rest = ChurchAmbT $ \c f z' -> msplitrest >>= let
+--           unwrap splitrest = runChurchAmbT splitrest unsplit f z'
+--           unsplit (x1, rest') _ = c x1 $ runChurchAmbT rest' c f z'
+--           in unwrap
+--     -- f0 punts, except we must make sure to call the failure continuation.
+--     f0 msplitrest = combine <$> msplitrest where
+--       combine splitrest = ChurchAmbT $ \c f z -> runChurchAmbT splitrest c f $ f z
+--     z0 = return afail
+--   {-# INLINABLE ambuncons #-}
+--
+-- instance Show a => Show (ChurchAmbT Identity a) where
+--   show = ambShow "ChurchAmb"
+
 -- We put m r everywhere so ChurchAmbT never has to use the underlying bind.
 -- We need m in the ChurchAmb type so we can make it a monad transformer later.
 -- As a bonus, no property of t, m or r is used 'behind' the forall, so any bind/return/&c takes place
@@ -139,27 +263,37 @@ type ChurchAmb = ChurchAmbT Identity
 
 instance Functor (ChurchAmbT f) where
   fmap = liftM
+  {-# INLINABLE fmap #-}
 
 instance Applicative (ChurchAmbT a) where
   pure = return
+  {-# INLINABLE pure #-}
   (<*>) = ap
+  {-# INLINABLE (<*>) #-}
 
 instance Monad (ChurchAmbT m) where
   return x = amb [x]
+  {-# INLINABLE return #-}
   -- note that f is called for failures in both the lhs and the rhs.
   -- Also, because both the outer and inner runAmbs are right-associative, we have proper right-associativity
   -- which yields the laziness and O(n) asymptotics we need.
   -- TODO: test both above assertions.
   -- TODO: test the underlying binding is correct. It should be. See 'ListT done right' for test ideas.
   xs0 >>= fxys = ChurchAmbT $ \c f z0 -> runChurchAmbT xs0 (\x z1 -> runChurchAmbT (fxys x) c f z1) f z0
+  {-# INLINABLE (>>=) #-}
 
 instance MonadTrans ChurchAmbT where
   -- The only time we use m as a monad.
   lift mx = ChurchAmbT $ \c _ z -> mx >>= \x -> c x z
+  {-# INLINABLE lift #-}
 
 instance Amb (ChurchAmbT m) where
   amb xs = ChurchAmbT $ \c _ z -> foldr c z xs
+  {-# INLINABLE amb #-}
   afail = ChurchAmbT $ \_ f z -> f z
+  {-# INLINABLE afail #-}
+
+instance Monad m => AmbTrans ChurchAmbT m
 
 -- instance MonadFunc ChurchAmbT where
 --   fmapT n a = ChurchAmbT $ \c0 f0 z0 -> let
@@ -173,6 +307,7 @@ instance Amb (ChurchAmbT m) where
 
 instance Monad m => AmbFold m (ChurchAmbT m) where
   ambFoldRT cf ff z xs = runChurchAmbT xs (\t mr -> mr >>= cf t) (>>= ff) (return z)
+  {-# INLINABLE ambFoldRT #-}
 
 instance Monad m => AmbLogic (ChurchAmbT m) where
   ambuncons a0 = join . lift $ runChurchAmbT a0 c0 f0 z0 where
@@ -195,9 +330,7 @@ instance Monad m => AmbLogic (ChurchAmbT m) where
     f0 msplitrest = combine <$> msplitrest where
       combine splitrest = ChurchAmbT $ \c f z -> runChurchAmbT splitrest c f $ f z
     z0 = return afail
-
-instance Eq a => Eq (ChurchAmbT Identity a) where
-  (==) = ambEq
+  {-# INLINABLE ambuncons #-}
 
 instance Show a => Show (ChurchAmbT Identity a) where
   show = ambShow "ChurchAmb"
@@ -258,6 +391,7 @@ instance Monad m => AmbFold m (ScottAmbT m) where
     cf1 first rest = ambFoldRT cf ff z rest >>= cf first
     ff1 = ambFoldRT cf ff z
 
+-- TODO: soon won't need these
 instance Eq a => Eq (ScottAmbT Identity a) where
   (==) = ambEq
 
