@@ -35,13 +35,27 @@ Test-Suite test
   build-depends:     base,
                      mtl,
 
+                     hfacts,
+
                      QuickCheck,
                      Cabal,
-                     cabal-test-quickcheck,
-
-                     free,
-
-                     hfacts
+                     cabal-test-quickcheck
   other-modules:     Control.Logic.Amb.Test
                      Test.QuickCheck.Law
+  default-language:  Haskell2010
+
+benchmark bench
+  type:              exitcode-stdio-1.0
+  hs-source-dirs:    bench
+  main-is:           Main.hs
+  build-depends:     base,
+                     mtl,
+                     
+                     deepseq,
+                     MonadRandom,
+
+                     hfacts,
+
+                     criterion
+  ghc-options:       -O2
   default-language:  Haskell2010
