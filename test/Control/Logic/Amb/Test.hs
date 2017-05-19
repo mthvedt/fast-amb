@@ -2,8 +2,7 @@
   FlexibleContexts,
   FlexibleInstances,
   Rank2Types,
-  ScopedTypeVariables,
-  ViewPatterns
+  ScopedTypeVariables
 #-}
 
 module Control.Logic.Amb.Test (ambTests) where
@@ -35,9 +34,6 @@ testAmb typeclass_desc h = testGroup ("Amb tests for " ++ typeclass_desc)
   , testProperty "Ambs are depth-first" $ axiomDepthFirst h
   ]
 
-stateHarness :: (Int, Fun Int Int) -> State Int Int
-stateHarness (x, apply -> f) = state $ \s -> (x, f s)
-
 type AmbTHarness c a m = AmbTrans a m => Harness (SmallList (Maybe c)) (a m Int)
 
 ambTHarness :: (AmbTrans a m, Arbitrary c, Show c) => Harness c (m Int) -> AmbTHarness c a m
@@ -57,7 +53,7 @@ testAmbT :: (AmbTrans a Identity, AmbTrans a (State Int), TestEq (a Identity Int
   String -> a Identity Int -> Test
 testAmbT typeclass_desc (_witness :: a Identity Int) = testGroup ("AmbT suite tests for " ++ typeclass_desc)
   [ testAmb typeclass_desc hId
-  , testMonadTrans typeclass_desc hAmbT stateHarness
+  , testMonadTrans typeclass_desc (return 1 :: a (State Int) Int)
   , testAmb (typeclass_desc ++ " (as State transformer)") hAmbT
   ] where
     hId :: AmbTHarness Int a Identity

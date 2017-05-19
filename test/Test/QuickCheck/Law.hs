@@ -1,7 +1,6 @@
 {-# LANGUAGE
   GeneralizedNewtypeDeriving,
   Rank2Types,
-  ScopedTypeVariables,
   ViewPatterns
 #-}
 -- To prevent the rewriting of properties we wanted to test, we have:
@@ -23,6 +22,9 @@ import Test.QuickCheck.Function
 import Distribution.TestSuite.QuickCheck
 
 type Harness c t = (Arbitrary c, Show c) => c -> t
+
+stateHarness :: (Int, Fun Int Int) -> State Int Int
+stateHarness (x, apply -> f) = state $ \s -> (x, f s)
 
 class TestEq t where
   runEq :: t -> t -> Bool
@@ -97,8 +99,8 @@ axiomMTDistributive h morph g (apply -> fcase) =
     mf = h . fcase
 
 testMonadMorph :: (Monad a, Monad b, TestEq (b Int), Arbitrary c, Show c) =>
-  String -> (forall x. a x -> b x) -> Harness c (a Int) -> Test
-testMonadMorph morph_desc morph h = testGroup ("MonadMorph axioms for " ++ morph_desc)
+  String -> Harness c (a Int) -> (forall x. a x -> b x) -> Test
+testMonadMorph morph_desc h morph = testGroup ("MonadMorph axioms for " ++ morph_desc)
   [ testProperty "MonadMorph identity law" $ axiomMonadMorphId morph
   , testProperty "MonadMorph distributive law" $ axiomMTDistributive h morph
   ]
@@ -108,15 +110,14 @@ testMonadMorph morph_desc morph h = testGroup ("MonadMorph axioms for " ++ morph
 newtype LowerKind m x = LowerKind (m x)
   deriving (Functor, Applicative, Monad, TestEq)
 
-typedLift :: (Monad m, MonadTrans t) => Harness c0 (t m Int) -> m x -> LowerKind (t m) x
+typedLift :: (Monad m, MonadTrans t) => t m Int -> m x -> LowerKind (t m) x
 typedLift _w mx = LowerKind $ lift mx
 
--- Like TestMonadMorph, but with MonadTrans-specific messages.
--- TODO: use a witness, not a harness
-testMonadTrans :: (MonadTrans t, Monad m, Monad (t m), TestEq (t m Int),
-    Arbitrary c0, Show c0, Arbitrary c1, Show c1) =>
-  String -> Harness c0 (t m Int) -> Harness c1 (m Int) -> Test
-testMonadTrans typeclass_desc h0 h1 = testGroup ("MonadTrans axioms for " ++ typeclass_desc)
-  [ testProperty "MonadTrans identity law" $ axiomMonadMorphId $ typedLift h0
-  , testProperty "MonadTrans distributive law" $ axiomMTDistributive h1 $ typedLift h0
+-- Like TestMonadMorph, but with MonadTrans-specific messages. Callers must provide a type witness
+-- of the type t (State Int) Int.
+testMonadTrans :: (MonadTrans t, Monad (t (State Int)), TestEq (t (State Int) Int)) =>
+  String -> t (State Int) Int -> Test
+testMonadTrans typeclass_desc _w = testGroup ("MonadTrans axioms for " ++ typeclass_desc)
+  [ testProperty "MonadTrans identity law" $ axiomMonadMorphId $ typedLift _w
+  , testProperty "MonadTrans distributive law" $ axiomMTDistributive stateHarness $ typedLift _w
   ]
