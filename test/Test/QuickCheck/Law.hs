@@ -29,8 +29,8 @@ class TestEq t where
 
 -- A small list, of maximium size 4.
 -- Needed because some of these tests get exponentially large.
--- Note that "ListT is not a monad transformer" -> we can't just pass in large lists and take 4,
--- because QuickCheck will always generate much larger lists.
+-- Note that we can't write tests with larger lists then take 4,
+-- because QuickCheck will always generate the full list.
 newtype SmallList t = SmallList { unsmall :: [t] }
   deriving (Functor, Show)
 
@@ -84,22 +84,39 @@ testMonad typeclass_desc h = testGroup ("Monad axioms for " ++ typeclass_desc)
   , testProperty "Monad associativity law" $ axiomMonadAssoc h
   ]
 
-axiomMTId :: (MonadTrans t, Monad m, Monad (t m), TestEq (t m Int), Arbitrary c, Show c) =>
-  Harness c (t m Int) -> Int -> Bool
-axiomMTId (_w :: Harness c (t m Int)) i = (return i :: t m Int) `runEq` lift (return i)
+axiomMonadMorphId :: (Monad a, Monad b, TestEq (b Int)) => (forall x. a x -> b x) -> Int -> Bool
+-- axiomMTId (_w :: Harness c (t m Int)) morph i = (return i :: t m Int) `runEq` lift (return i)
+axiomMonadMorphId morph i = morph (return i) `runEq` return i
 
 -- TODO is this wrong?
-axiomMTDistributive :: (MonadTrans t, Monad m, Monad (t m), TestEq (t m Int), Arbitrary c1, Show c1) =>
-  Harness c0 (t m Int) -> Harness c1 (m Int) -> c1 -> Fun Int c1 -> Bool
-axiomMTDistributive (h0 :: Harness c0 (t m Int)) h1 g (apply -> fcase) =
-  lift (ma >>= mf) `runEq` ((lift ma :: t m Int) >>= (lift . mf)) where
-    ma = h1 g
-    mf = h1 . fcase
+axiomMTDistributive :: (Monad a, Monad b, TestEq (b Int), Arbitrary c, Show c) =>
+  Harness c (a Int) -> (forall x. a x -> b x) -> c -> Fun Int c -> Bool
+axiomMTDistributive h morph g (apply -> fcase) =
+  morph (ma >>= mf) `runEq` (morph ma >>= (morph . mf)) where
+    ma = h g
+    mf = h . fcase
 
+testMonadMorph :: (Monad a, Monad b, TestEq (b Int), Arbitrary c, Show c) =>
+  String -> (forall x. a x -> b x) -> Harness c (a Int) -> Test
+testMonadMorph morph_desc morph h = testGroup ("MonadMorph axioms for " ++ morph_desc)
+  [ testProperty "MonadMorph identity law" $ axiomMonadMorphId morph
+  , testProperty "MonadMorph distributive law" $ axiomMTDistributive h morph
+  ]
+
+-- Using this newtype and a type witness is the only way I could get lift to have the proper kindedness,
+-- forall x. m x -> (t m) x. GHC's kind inference behaves oddly sometimes.
+newtype LowerKind m x = LowerKind (m x)
+  deriving (Functor, Applicative, Monad, TestEq)
+
+typedLift :: (Monad m, MonadTrans t) => Harness c0 (t m Int) -> m x -> LowerKind (t m) x
+typedLift _w mx = LowerKind $ lift mx
+
+-- Like TestMonadMorph, but with MonadTrans-specific messages.
+-- TODO: use a witness, not a harness
 testMonadTrans :: (MonadTrans t, Monad m, Monad (t m), TestEq (t m Int),
     Arbitrary c0, Show c0, Arbitrary c1, Show c1) =>
   String -> Harness c0 (t m Int) -> Harness c1 (m Int) -> Test
-testMonadTrans typeclass_desc h0 h1 =  testGroup ("MonadTrans axioms for " ++ typeclass_desc)
-  [ testProperty "MonadTrans identity law" $ axiomMTId h0
-  , testProperty "MonadTrans distributive law" $ axiomMTDistributive h0 h1
+testMonadTrans typeclass_desc h0 h1 = testGroup ("MonadTrans axioms for " ++ typeclass_desc)
+  [ testProperty "MonadTrans identity law" $ axiomMonadMorphId $ typedLift h0
+  , testProperty "MonadTrans distributive law" $ axiomMTDistributive h1 $ typedLift h0
   ]
