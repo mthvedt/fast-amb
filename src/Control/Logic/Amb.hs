@@ -12,6 +12,7 @@
 
 module Control.Logic.Amb where
 
+import qualified Control.Arrow as Arrow
 import Control.Monad
 import Control.Monad.Identity
 import Control.Monad.Trans
@@ -23,7 +24,10 @@ class (Amb a, Monad m) => AmbFold m a | a -> m where
 -- TODO test all of these
 ambFoldLT' :: AmbFold m a => (m r -> t -> m r) -> m r -> a t -> m r
 {-# INLINABLE ambFoldLT' #-}
-ambFoldLT' c0 mz xs = unwrap $ ambFoldRT mc (return id) xs where
+-- Note that for all these, we inline based on the first *two* parameters,
+-- which are what we want to inline/specialize. Also, the amb parameter is usually "hidden" from the optimizer
+-- behind a forall.
+ambFoldLT' c0 mz = unwrap . ambFoldRT mc (return id) where
   -- This transforms a list into a series of (strict) updates on the initial value z.
   -- We note that the function cont, of type m r -> m r, is finitely bounded because foldr is lazy.
   -- So a foldr is turned into a strict foldl in finite space.
@@ -45,11 +49,11 @@ ambFoldLM' c0 z = ambFoldLT' c (return z) where
 
 ambFoldR :: AmbFold Identity a => (t -> r -> r) -> r -> a t -> r
 {-# INLINABLE ambFoldR #-}
-ambFoldR c z a = runIdentity $ ambFoldRM (\t r -> return $ c t r) z a
+ambFoldR c z = runIdentity . ambFoldRM (\t r -> return $ c t r) z
 
 ambFoldL' :: AmbFold Identity a => (r -> t -> r) -> r -> a t -> r
 {-# INLINABLE ambFoldL' #-}
-ambFoldL' c z a = runIdentity $ ambFoldLM' (\r t -> return $ c r t) z a
+ambFoldL' c z = runIdentity . ambFoldLM' (\r t -> return $ c r t) z
 
 -- TODO what's this for?
 newtype ChurchFoldable t = ChurchFoldable (forall r. (t -> r -> r) -> r -> r)
@@ -63,11 +67,9 @@ asFoldable :: AmbFold Identity a => a t -> ChurchFoldable t
 asFoldable a = ChurchFoldable $ \f z -> ambFoldR f z a
 
 ambEq :: (AmbFold Identity a, AmbFold Identity b, Eq t) => a t -> b t -> Bool
-{-# INLINABLE ambEq #-}
 ambEq as bs = toList (asFoldable as) == toList (asFoldable bs)
 
 ambShow :: (AmbFold Identity a, Show t) => String -> a t -> String
-{-# INLINABLE ambShow #-}
 ambShow name as = name ++ (show . toList $ asFoldable as)
 
 -- Amb laws:
@@ -90,11 +92,11 @@ ambcat :: Amb a => [a t] -> a t
 ambcat = join . amb
 
 toListM :: AmbFold m a => a t -> m [t]
-{-# INLINABLE toListM #-}
 toListM = ambFoldRT (\x xs -> (x:) <$> xs) $ return []
 
--- ambcons :: Amb a => t -> a t -> a t
--- ambcons x xs = ambcat [return x, xs]
+ambcons :: Amb a => t -> a t -> a t
+{-# INLINABLE ambcons #-}
+ambcons x xs = ambcat [return x, xs]
 
 -- An AmbTrans is a monad transformer obeying the Amb and AmbTrans laws, viz:
 -- join . amb $ amblift <$> ms === amblift (join ms) where ms is of type [[m x]].
@@ -109,9 +111,9 @@ amblift ms = join . amb $ lift <$> ms
 -- An AmbLogic is an Amb that supports uncons: getting a first and a rest.
 -- Minimal complete definition: ambuncons | ambpeek.
 -- Must obey the following laws:
--- TODO: express these laws in terms of observeMany
--- * ambpeek f a === ambuncons a >>= uncurry f,
--- * ambuncons $ amb as === amb (return $ first as, amb $ rest as) when as is non-empty,
+-- * observe (ambcat (a:as)) === join (f <$> observe a) where
+--     f (Just t, ts) = return (Just t, ambcat (ts:as))
+--     f (Nothing, _) = observe $ ambcat as
 -- * ambuncons $ amb as === ambzero when as is empty.
 -- In particular,
 -- * let Amb a => (x, y), where x converges and is nonempty, and y diverges.
@@ -126,9 +128,12 @@ class Amb a => AmbLogic a where
   {-# INLINABLE ambuncons #-}
   ambuncons = ambpeek $ curry return
 
--- TODO
--- observe :: AmbLogic a => a t -> a t
--- observe xs = fst <$> ambuncons xs
+observe :: AmbLogic a => a t -> a (Maybe t, a t)
+observe xs = fst <$> ambuncons choices where
+  -- choice :: a (Maybe t , a t)
+  choice = Arrow.first Just <$> ambuncons xs
+  -- choices :: a (Maybe t, a t)
+  choices = ambcat [choice, return (Nothing, ambzero)]
 
 -- TODO
 observeMany :: AmbLogic a => Int -> a t -> a ([t], a t)
@@ -245,6 +250,7 @@ instance Monad m => AmbLogic (ChurchAmbT m) where
           unsplit (x1, rest') _ = c x1 $ runChurchAmbT rest' c z'
           in unwrap
     z0 = return ambzero
+  -- Probably won't be inlined, but we want other modules to specialize it.
   {-# INLINABLE ambuncons #-}
 
 instance Show a => Show (ChurchAmbT Identity a) where
@@ -331,7 +337,7 @@ instance Applicative (ParigotAmbT a) where
 instance Monad (ParigotAmbT m) where
   return x = amb [x]
   -- TODO: test laziness, asymptotics
-  -- The expensive boxing/unboxing terms, here `combine`, are not usually evaluated.
+  -- The expensive boxing/unboxing terms, are not usually evaluated.
   -- However, when not inlined, there is a layer of indirection executed once per element
   -- of the inner monad. Contrast to ChurchAmb where that
   -- layer is only executed once per element of the outer monad.

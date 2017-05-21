@@ -7,11 +7,13 @@
 
 module Control.Logic.Amb.Test (ambTests) where
 
+import qualified Control.Arrow as Arrow
 import Control.Monad
 import Control.Monad.Identity
 import Control.Monad.State
 import Control.Monad.Trans
 import Data.Foldable (toList)
+import Data.Maybe (fromMaybe)
 
 import Control.Logic.Amb
 
@@ -30,24 +32,31 @@ axiomDepthFirst h cases = ambcat (ambcat <$> xs) `runEq` join (ambcat <$> amb xs
 
 -- Tests the laws for ambuncons.
 -- TODO this law doesn't tell us anything interesting about states when a or as is empty
--- * ambuncons $ ambcat (a:as) === \(t, ts) -> (t, ambcat (ts:as)) <$> ambuncons a when a is nonempty
--- * ambuncons $ ambcat (ambzero:as) === ambuncons $ ambcat as
+
+-- * ambuncons $ join as === recons <$> ambuncons (ambuncons <$> as where)
+--     recons :: ((t, a t), a (t, a t)) -> (t, a t)
+--     recons ((first, rest1), rests) = (first, ambcat [rest1, join $ uncurry ambcons <$> rests])
+
+-- * observe $ ambcat (a:as) === \(t, ts) -> (t, ambcat (ts:as)) <$> observe a
 -- * ambuncons ambzero === ambzero
 -- TODO remove constraints from Harness
-unconsEqHelper :: (AmbLogic a, TestEq (a Int)) => a (Int, a Int) -> a (Int, a Int) -> Bool
+
+-- Twiddle an ambuncons so we can run it through unconsEqHelper
+justFirst :: Functor a => a (t, a t) -> a (Maybe t, a t)
+justFirst a = Arrow.first Just <$> a
+
+unconsEqHelper :: (AmbLogic a, TestEq (a Int)) => a (Maybe Int, a Int) -> a (Maybe Int, a Int) -> Bool
 unconsEqHelper x y = fstEq x y && sndEq x y where
- fstEq x y = (fst <$> x) `runEq` (fst <$> y)
- sndEq x y = join (snd <$> x) `runEq` join (snd <$> y)
+  fstEq x y = (fromMaybe (-1) . fst <$> x) `runEq` (fromMaybe (-1) . fst <$> y)
+  sndEq x y = join (snd <$> x) `runEq` join (snd <$> y)
 
 axiomUncons :: (AmbLogic a, TestEq (a Int), Arbitrary c, Show c) =>
   Harness c (a Int) -> [c] -> Bool
-axiomUncons (h :: Harness c (a Int)) [] = unconsEqHelper (ambuncons ambzero :: a (Int, a Int)) ambzero
-axiomUncons h (c:cs) = if ambzero `runEq` a
-    then axiomUncons h cs
-    else unconsEqHelper (ambuncons $ ambcat (a:as)) $ inj <$> ambuncons a where
-  a = h c
-  as = h <$> cs
-  inj (t, ts) = (t, ambcat (ts:as))
+axiomUncons (h :: Harness c (a Int)) [] = unconsEqHelper (justFirst $ ambuncons (ambzero :: a Int)) ambzero
+axiomUncons h cs = observe (ambcat (a:as)) `unconsEqHelper` join (f <$> observe a) where
+  f (Just t, ts) = return (Just t, ambcat (ts:as))
+  f (Nothing, _) = observe $ ambcat as
+  (a:as) = h <$> cs
 
 -- -- Test that taking the first N from an amb is equivalent to taking n, then amb.
 -- -- Especially important when a is a monad transformer.
