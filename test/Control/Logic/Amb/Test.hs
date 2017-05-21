@@ -29,7 +29,7 @@ axiomDepthFirst h cases = ambcat (ambcat <$> xs) `runEq` join (ambcat <$> amb xs
   xs = unsmall $ unsmall . fmap h <$> cases
 
 -- Tests the laws for ambuncons.
--- TODO this law doesn't tell us anything interesting about states.
+-- TODO this law doesn't tell us anything interesting about states when a or as is empty
 -- * ambuncons $ ambcat (a:as) === \(t, ts) -> (t, ambcat (ts:as)) <$> ambuncons a when a is nonempty
 -- * ambuncons $ ambcat (ambzero:as) === ambuncons $ ambcat as
 -- * ambuncons ambzero === ambzero
@@ -71,20 +71,16 @@ testAmb typeclass_desc h = testGroup ("Amb tests for " ++ typeclass_desc)
   -- , testProperty "Observe works and is fully lazy" $ axiomLazyTake h
   ]
 
-type AmbTHarness c a m = AmbTrans a m => Harness (SmallList (Maybe c)) (a m Int)
+type AmbTHarness c a m = AmbTrans a m => Harness (SmallList c) (a m Int)
 
 ambTHarness :: (AmbTrans a m, Arbitrary c, Show c) => Harness c (m Int) -> AmbTHarness c a m
-ambTHarness g0 gs = let toAmb (Just v) = lift v
-                        toAmb Nothing = afail
-                        gs' = fmap g0 <$> gs
-                        amblist = toAmb <$> unsmall gs'
-                    in ambcat amblist
+ambTHarness g0 gs = ambcat $ lift <$> unsmall (g0 <$> gs)
 
 instance (AmbTrans a Identity, Eq t) => TestEq (a Identity t) where
   runEq = ambEq
 
 instance (AmbTrans a (State Int), Eq t) => TestEq (a (State Int) t) where
-  a `runEq` b = runState (toMaybeListM a) 1 == runState (toMaybeListM b) 1
+  a `runEq` b = runState (toListM a) 1 == runState (toListM b) 1
 
 testAmbT :: (AmbTrans a Identity, AmbTrans a (State Int), AmbLogic (a Identity), AmbLogic (a (State Int)),
   TestEq (a Identity Int), TestEq (a (State Int) Int)) =>

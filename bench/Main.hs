@@ -24,7 +24,7 @@ nestedAmbs s 1 = amb . force <$> replicateM s getRandom
 nestedAmbs s d = ambcat <$> replicateM s (nestedAmbs s (d - 1))
 
 sumAmb :: AmbFold Identity a => a Int -> Int
-sumAmb = ambFoldL' (+) id 0
+sumAmb = ambFoldL' (+) 0
 
 depth2Inline :: (RandomGen g, Amb a) => Rand g (a Int)
 depth2Inline = do
