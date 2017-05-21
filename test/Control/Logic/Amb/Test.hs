@@ -30,19 +30,24 @@ axiomDepthFirst h cases = ambcat (ambcat <$> xs) `runEq` join (ambcat <$> amb xs
 
 -- Tests the laws for ambuncons.
 -- TODO this law doesn't tell us anything interesting about states.
--- * ambuncons $ amb as === return (first as, amb $ rest as) when as is non-empty
+-- * ambuncons $ ambcat (a:as) === \(t, ts) -> (t, ambcat (ts:as)) <$> ambuncons a when a is nonempty
+-- * ambuncons $ ambcat (ambzero:as) === ambuncons $ ambcat as
 -- * ambuncons ambzero === ambzero
 -- TODO remove constraints from Harness
-unconsEqHelper :: (AmbLogic a, TestEq (a Int), Arbitrary c, Show c) =>
-  Harness c (a Int) -> a (c, a c) -> a (c, a c) -> Bool
-unconsEqHelper h x y = fstEq x y && sndEq x y where
- fstEq x y = join (h . fst <$> x) `runEq` join (h . fst <$> y)
- sndEq x y = join (join . fmap h . snd <$> x) `runEq` join (join . fmap h . snd <$> y)
+unconsEqHelper :: (AmbLogic a, TestEq (a Int)) => a (Int, a Int) -> a (Int, a Int) -> Bool
+unconsEqHelper x y = fstEq x y && sndEq x y where
+ fstEq x y = (fst <$> x) `runEq` (fst <$> y)
+ sndEq x y = join (snd <$> x) `runEq` join (snd <$> y)
 
 axiomUncons :: (AmbLogic a, TestEq (a Int), Arbitrary c, Show c) =>
   Harness c (a Int) -> [c] -> Bool
-axiomUncons (h :: Harness c (a Int)) [] = unconsEqHelper h (ambuncons ambzero :: a (c, a c)) ambzero
-axiomUncons h (c:cs) = unconsEqHelper h (ambuncons $ amb (c:cs)) $ return (c, amb cs)
+axiomUncons (h :: Harness c (a Int)) [] = unconsEqHelper (ambuncons ambzero :: a (Int, a Int)) ambzero
+axiomUncons h (c:cs) = if ambzero `runEq` a
+    then axiomUncons h cs
+    else unconsEqHelper (ambuncons $ ambcat (a:as)) $ inj <$> ambuncons a where
+  a = h c
+  as = h <$> cs
+  inj (t, ts) = (t, ambcat (ts:as))
 
 -- -- Test that taking the first N from an amb is equivalent to taking n, then amb.
 -- -- Especially important when a is a monad transformer.

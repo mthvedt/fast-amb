@@ -106,6 +106,9 @@ ambcat :: Amb a => [a t] -> a t
 {-# INLINABLE ambcat #-}
 ambcat = join . amb
 
+-- ambcons :: Amb a => t -> a t -> a t
+-- ambcons x xs = ambcat [return x, xs]
+
 -- An AmbTrans is a monad transformer obeying the Amb and AmbTrans laws, viz:
 -- join . amb $ amblift <$> ms === amblift (join ms) where ms is of type [[m x]].
 -- TODO need to be able to mix with regular amb.
