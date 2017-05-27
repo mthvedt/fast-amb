@@ -7,6 +7,7 @@ module Main where
 
 import Control.Monad
 import Control.Monad.Identity
+import Data.Foldable
 
 import Control.DeepSeq
 import Control.Monad.Logic
@@ -119,12 +120,29 @@ benchAmb s (_w :: l Int) = bgroup s <$> sequence
   , sumBench "2^16, depth 2, inline" depth2Inline
   , sumBench "2^16, depth 4, inline" depth4Inline
   , sumBench "2^16, depth 8, inline" depth8Inline
-  , sumBench "2^16, depth 16, inline" depth16Inline
+  , sumSplit "2^16, flat, msplit 1" (nestedLogic 65536 1) 1
+  , sumSplit "2^16, flat, msplit 16" (nestedLogic 65536 1) 16
+  , sumSplit "2^16, flat, msplit 256" (nestedLogic 65536 1) 256
+  , sumSplit "2^16, flat, msplit 4096" (nestedLogic 65536 1) 4096
+  , sumSplit "2^16, depth 4, inline, msplit 1" depth4Inline 1
+  , sumSplit "2^16, depth 4, inline, msplit 16" depth4Inline 16
+  , sumSplit "2^16, depth 4, inline, msplit 256" depth4Inline 256
+  , sumSplit "2^16, depth 4, inline, msplit 4096" depth4Inline 4096
+  , sumSplit "2^16, depth 16, inline, msplit 1" depth16Inline 1
+  , sumSplit "2^16, depth 16, inline, msplit 16" depth16Inline 16
+  , sumSplit "2^16, depth 16, inline, msplit 256" depth16Inline 256
+  , sumSplit "2^16, depth 4, inline, msplit 4096" depth4Inline 4096
   ] where
     sumBench :: RandomGen g => String -> Rand g (l Int) -> Rand g Benchmark
     sumBench str ints = bench str . nf sumAmb <$> ints
     sumBenchNested str s d = sumBench str $ nestedLogic s d
+    sumSplit str ints num = bench str . nf (foldl' (+) 0) <$> unsplits where
+      unsplit 0 _ = []
+      unsplit _ Nothing = []
+      unsplit count (Just (i, mi)) = i:(unsplit (count - 1) . observe $ msplit mi)
+      unsplits = unsplit num . observe . msplit <$> ints
 
+-- TODO: no need for rand monad
 main = defaultMain . evalRand (sequence b) $ mkStdGen 0 where
   b = [ benchAmb "List" []
       , benchAmb "Logic" (mzero :: Logic Int)
