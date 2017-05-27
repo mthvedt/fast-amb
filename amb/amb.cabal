@@ -1,0 +1,74 @@
+name:                amb
+
+-- The package version.  See the Haskell package versioning policy (PVP)
+-- for standards guiding when and how versions should be incremented.
+-- https://wiki.haskell.org/Package_versioning_policy
+-- PVP summary:      +-+------- breaking API changes
+--                   | | +----- non-breaking API additions
+--                   | | | +--- code changes with no API change
+version:             0.1.0.0
+
+-- A short (one-line) description of the package.
+synopsis:            Fast fair backtracking search.
+
+-- A longer description of the package.
+-- description:
+
+license:             BSD3
+license-file:        LICENSE
+author:              Mike Thvedt
+maintainer:          mike.thvedt@gmail.com
+category:            Control
+build-type:          Simple
+extra-source-files:  ChangeLog.md
+cabal-version:       >=1.10
+
+library
+  exposed-modules:     Control.Monad.Logic.Amb,
+                       Control.Monad.Logic.Run
+  -- other-modules:
+  -- other-extensions:
+  -- Other library packages from which modules are imported.
+  -- TODO: depends bounds
+  hs-source-dirs:      src
+  build-depends:       base >=4.9,
+                       mtl,
+
+                       monadplus,
+                       logict
+  default-language:    Haskell2010
+
+Test-Suite test
+  type:              detailed-0.9
+  test-module:       Tests
+  hs-source-dirs:    test
+  build-depends:     base,
+                     mtl,
+
+                     logict,
+
+                     amb,
+
+                     QuickCheck,
+                     Cabal,
+                     cabal-test-quickcheck
+  other-modules:     Control.Monad.Logic.Amb.Test
+                     Test.QuickCheck.Law
+  default-language:  Haskell2010
+
+benchmark bench
+  type:              exitcode-stdio-1.0
+  hs-source-dirs:    bench
+  main-is:           Main.hs
+  build-depends:     base,
+                     mtl,
+
+                     deepseq,
+                     logict,
+                     MonadRandom,
+
+                     amb,
+
+                     criterion
+  ghc-options:       -O2
+  default-language:  Haskell2010

@@ -73,10 +73,10 @@ ambShow :: (AmbFold Identity a, Show t) => String -> a t -> String
 ambShow name as = name ++ (show . toList $ asFoldable as)
 
 -- Amb laws:
--- Let [[as]] be a list of list of ambs. Then
+-- Let [[as]] be a list of lists of ambs. Then
 -- ambcat (ambcat <$> as) === join (ambcat <$> amb as), where ambcat = join . amb.
 class Monad a => Amb a where
-  -- Creates an Amb which returns the given elements in order, never failing.
+  -- Creates an Amb which returns the given elements in order.
   --
   -- Ambs are often split into (first, rest) pairs, and list is the simplest functor
   -- that does this performantly. This is why the amb function operates on a list,
@@ -99,7 +99,7 @@ ambcons :: Amb a => t -> a t -> a t
 ambcons x xs = ambcat [return x, xs]
 
 -- An AmbTrans is a monad transformer obeying the Amb and AmbTrans laws, viz:
--- join . amb $ amblift <$> ms === amblift (join ms) where ms is of type [[m x]].
+-- join . amb $ amblift <$> as === amblift (join as)
 -- TODO need to be able to mix with regular amb.
 -- TODO: maybe use MFunctor instead, or together with this.
 class (MonadTrans t, Monad m, Amb (t m), AmbFold m (t m)) => AmbTrans t m where
@@ -141,11 +141,11 @@ observeMany :: AmbLogic a => Int -> a t -> a ([t], a t)
 observeMany x _ | x < 0 = error "cannot observe less than 0"
 observeMany 0 xs = return ([], xs)
 -- Need to do this ambcat so if xs0 is empty, we still get []
-observeMany i xs0 = ambcat [r, return ([], ambzero)] where
-  f x tail0 = do
+observeMany i xs0 = observe xs0 >>= f where
+  f (Just x, tail0) = do
     (xs, tail1) <- observeMany (i - 1) tail0
     return (x:xs, tail1)
-  r = ambpeek f xs0
+  f (Nothing, _) = ambzero
 
 -- -- TODO: testme
 -- -- TODO: class or func?
@@ -374,45 +374,3 @@ instance Show a => Show (ParigotAmbT Identity a) where
 newtype FastAmbT m t = FastAmbT {
   runFastAmbT :: forall r. FastAmbT m t -> (t -> FastAmbT m t -> m r -> m r) -> m r -> m r
 }
-
-type FastAmb = FastAmbT Identity
-
-instance Functor (FastAmbT f) where
-  fmap = liftM
-
-instance Applicative (FastAmbT a) where
-  pure = return
-  (<*>) = ap
-
-instance Monad (FastAmbT m) where
-  return x = amb [x]
-  -- The crucial improvement here is that the inner runFastAmbT is executed directly on the continuations
-  -- cy and fy.
-  xs0 >>= fxys = FastAmbT $ \rest cy z0 -> let
-    cx x xrest = runFastAmbT (fxys x) (ambcat [xrest >>= fxys, rest]) cy
-    in runFastAmbT xs0 undefined cx z0
-
-instance MonadTrans FastAmbT where
-  -- The only time we use m as a monad.
-  lift mx = FastAmbT $ \rest c z -> mx >>= \x -> c x rest z
-
-instance Amb (FastAmbT m) where
-  amb [] = FastAmbT $ \_ _ z -> z
-  amb (x:xs) = FastAmbT $ \rest c z -> c x (ambcat [axs, rest]) $ runFastAmbT axs rest c z where
-    axs = amb xs
-
-instance AmbLogic (FastAmbT m) where
-  ambpeek mf xs0 = FastAmbT $ \rest cf0 z0 -> let
-    cf x xs = runFastAmbT (mf x xs) rest cf0
-    in runFastAmbT xs0 undefined cf z0
-
-instance Monad m => AmbFold m (FastAmbT m) where
-  ambFoldRT cf z0 xs0 =
-    -- Here we see the advantage of laziness: the _xs args are never used.
-    runFastAmbT xs0 ambzero (\x _xs z -> cf x z) z0
-
-instance Eq a => Eq (FastAmbT Identity a) where
-  (==) = ambEq
-
-instance Show a => Show (FastAmbT Identity a) where
-  show = ambShow "FastAmb"
