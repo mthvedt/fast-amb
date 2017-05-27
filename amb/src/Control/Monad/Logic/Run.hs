@@ -1,21 +1,33 @@
 {-# LANGUAGE
   ConstraintKinds,
   FlexibleContexts,
+  FlexibleInstances,
   FunctionalDependencies,
   MultiParamTypeClasses
 #-}
 
 module Control.Monad.Logic.Run where
 
+import GHC.Exts (inline)
+
 import Control.Monad.Identity
 import Data.Foldable (toList)
 
+import qualified Control.Monad.Logic as LogicT
 import Control.Monad.Logic.Class
 
 class (Monad m, MonadLogic l) => RunLogicT m l | l -> m where
   runLogicT :: (t -> m r -> m r) -> m r -> l t -> m r
 
 type RunLogic = RunLogicT Identity
+
+instance RunLogicT Identity [] where
+  {-# INLINE runLogicT #-}
+  runLogicT = foldr
+
+instance Monad m => RunLogicT m (LogicT.LogicT m) where
+  {-# INLINE runLogicT #-}
+  runLogicT c z l = LogicT.runLogicT l c z
 
 -- TODO test all of these
 runLogicLT' :: RunLogicT m l => (m r -> t -> m r) -> m r -> l t -> m r
@@ -35,32 +47,32 @@ runLogicLT' c0 = go where
 
 runLogicM :: RunLogicT m l => (t -> r -> m r) -> r -> l t -> m r
 {-# INLINABLE runLogicM #-}
-runLogicM c0 = runLogicT c . return where
+runLogicM c0 = inline runLogicT c . return where
   c x mr = mr >>= c0 x
 
 runLogicLM' :: RunLogicT m l => (r -> t -> m r) -> r -> l t -> m r
 {-# INLINABLE runLogicLM' #-}
-runLogicLM' c0 = runLogicLT' c . return where
+runLogicLM' c0 = inline runLogicLT' c . return where
   c mr x = mr >>= \r -> c0 r x
 
 -- TODO: is A things appropriate? or maybe Traversable?
 runLogicLift :: RunLogicT m l => (t -> r -> r) -> r -> l t -> m r
 {-# INLINABLE runLogicLift #-}
-runLogicLift c = runLogicM $ \t r -> return $ c t r
+runLogicLift c = inline runLogicM $ \t r -> return $ c t r
 
 runLogicLiftL' :: RunLogicT m l => (r -> t -> r) -> r -> l t -> m r
 {-# INLINABLE runLogicLiftL' #-}
-runLogicLiftL' c = runLogicLM' $ \t r -> return $ c t r
+runLogicLiftL' c = inline runLogicLM' $ \t r -> return $ c t r
 
 runLogic :: RunLogic l => (t -> r -> r) -> r -> l t -> r
 {-# INLINABLE runLogic #-}
 -- Inline/specialize based on choice of c
-runLogic c = go where go z = runIdentity . runLogicLift c z
+runLogic c = go where go z = runIdentity . inline runLogicLift c z
 
 runLogicL' :: RunLogic l => (r -> t -> r) -> r -> l t -> r
 {-# INLINABLE runLogicL' #-}
 -- Inline/specialize based on choice of c
-runLogicL' c = go where go z = runIdentity . runLogicLiftL' c z
+runLogicL' c = go where go z = runIdentity . inline runLogicLiftL' c z
 
 logicToList :: RunLogicT m l => l t -> m [t]
 logicToList = runLogicLift (:) []

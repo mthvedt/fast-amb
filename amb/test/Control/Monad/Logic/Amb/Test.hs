@@ -69,7 +69,7 @@ testLogicT typeclass_desc (_witness :: l Identity Int) = testGroup ("AmbT suite 
 
 ambTests :: Test
 ambTests = testGroup "Control.Logic.Amb"
-  [ testLogicT "FastAmb" (return 1 :: Amb Int)
+  [ testLogicT "FastAmb" (mzero :: Amb Int)
   -- , testCase "ScottAmb" (return 1 :: ScottAmb Int)
   -- , testCase "ParigotAmb" (return 1 :: ParigotAmb Int)
   -- , testCase "FastAmb" (return 1 :: FastAmb Int)

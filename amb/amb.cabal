@@ -32,6 +32,7 @@ library
   -- TODO: depends bounds
   hs-source-dirs:      src
   build-depends:       base >=4.9,
+                       ghc-prim,
                        mtl,
 
                        monadplus,
